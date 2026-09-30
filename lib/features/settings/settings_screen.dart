@@ -102,6 +102,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Future<void> _share() async {
+    // iPads show the share sheet as a popover, which needs an anchor.
+    final box = context.findRenderObject() as RenderBox?;
+    final origin = box == null
+        ? null
+        : box.localToGlobal(Offset.zero) & box.size;
     final file = await _export();
     if (file == null) return;
     await SharePlus.instance.share(
@@ -109,6 +114,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         files: [XFile(file.path, mimeType: 'application/zip')],
         subject: 'Fitmeasure backup',
         title: 'Save your Fitmeasure backup',
+        sharePositionOrigin: origin,
       ),
     );
   }

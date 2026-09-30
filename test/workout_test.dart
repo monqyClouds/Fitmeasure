@@ -425,6 +425,43 @@ void main() {
     expect(streak([DateTime(2026, 9, 29), DateTime(2026, 9, 10)]), 1);
   });
 
+  test('upgrading to version 3 makes media paths relative', () async {
+    driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+    addTearDown(
+      () => driftRuntimeOptions.dontWarnAboutMultipleDatabases = false,
+    );
+    final dir = await Directory.systemTemp.createTemp('fitmeasure_v3');
+    addTearDown(() => dir.delete(recursive: true));
+    final file = File('${dir.path}/db.sqlite');
+
+    var old = AppDatabase(NativeDatabase(file));
+    final p = await ProfileRepo(old).create(name: 'Ada', color: 1);
+    final bench = await (old.select(old.exercises)..limit(1)).getSingle();
+    for (final (kind, uri) in [
+      (
+        'image',
+        '/data/user/0/com.fitmeasure.fitmeasure/app_flutter/media/$p/1.jpg',
+      ),
+      ('link', 'https://youtu.be/media/abc'),
+    ]) {
+      await old.customStatement(
+        'INSERT INTO exercise_media (profile_id, exercise_id, kind, uri) '
+        'VALUES (?, ?, ?, ?)',
+        [p, bench.id, kind, uri],
+      );
+    }
+    await old.customStatement('PRAGMA user_version = 2');
+    await old.close();
+
+    final upgraded = AppDatabase(NativeDatabase(file));
+    addTearDown(upgraded.close);
+    final uris = [
+      for (final m in await upgraded.select(upgraded.exerciseMedia).get())
+        m.uri,
+    ];
+    expect(uris, ['media/$p/1.jpg', 'https://youtu.be/media/abc']);
+  });
+
   group('units', () {
     test('numbers and durations format and parse', () {
       expect(formatNumber(60), '60');

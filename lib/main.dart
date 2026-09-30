@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'app/app.dart';
 import 'app/providers.dart';
@@ -22,8 +23,12 @@ Future<void> main() async {
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
   final db = AppDatabase();
+  final documents = await getApplicationDocumentsDirectory();
   final container = ProviderContainer(
-    overrides: [databaseProvider.overrideWithValue(db)],
+    overrides: [
+      databaseProvider.overrideWithValue(db),
+      documentsPathProvider.overrideWithValue(documents.path),
+    ],
   );
 
   // Reopen the last profile used, so a single user skips the picker.

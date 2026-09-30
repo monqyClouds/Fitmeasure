@@ -12,6 +12,12 @@ import '../data/repos/settings_repo.dart';
 import '../data/repos/strength_repo.dart';
 import '../domain/strength.dart';
 
+/// The app's documents folder, which media paths are relative to.
+/// Overridden in main().
+final documentsPathProvider = Provider<String>(
+  (ref) => throw UnimplementedError('documentsPathProvider must be overridden'),
+);
+
 /// Overridden in main() (and in tests) with a concrete database.
 final databaseProvider = Provider<AppDatabase>(
   (ref) => throw UnimplementedError('databaseProvider must be overridden'),

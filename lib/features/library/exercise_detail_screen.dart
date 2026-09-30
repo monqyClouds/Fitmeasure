@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../data/db/database.dart';
+import '../../data/media_paths.dart';
 import '../../domain/enums.dart';
 import '../../widgets/common.dart';
 import '../../widgets/motion.dart';
@@ -349,7 +350,7 @@ class _MediaHint extends StatelessWidget {
   }
 }
 
-class _MediaThumb extends StatelessWidget {
+class _MediaThumb extends ConsumerWidget {
   const _MediaThumb({
     required this.item,
     required this.onTap,
@@ -361,8 +362,10 @@ class _MediaThumb extends StatelessWidget {
   final VoidCallback onLongPress;
 
   @override
-  Widget build(BuildContext context) {
-    final file = File(item.uri);
+  Widget build(BuildContext context, WidgetRef ref) {
+    final file = File(
+      resolveMediaPath(ref.watch(documentsPathProvider), item.uri),
+    );
     final missing = !file.existsSync();
     Widget content;
     if (missing) {

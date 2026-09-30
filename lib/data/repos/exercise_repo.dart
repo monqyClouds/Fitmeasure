@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../domain/enums.dart';
 import '../db/database.dart';
+import '../media_paths.dart';
 
 class ExerciseWithMedia {
   const ExerciseWithMedia(this.exercise, this.mediaCount);
@@ -127,7 +128,7 @@ class ExerciseRepo {
             profileId: profileId,
             exerciseId: exerciseId,
             kind: kindForExtension(ext),
-            uri: dest.path,
+            uri: p.relative(dest.path, from: root.path),
             label: Value(p.basenameWithoutExtension(fileName)),
           ),
         );
@@ -159,7 +160,7 @@ class ExerciseRepo {
 
   Future<void> _deleteFile(MediaItem item) async {
     if (item.kind == MediaKind.link) return;
-    final f = File(item.uri);
+    final f = File(resolveMediaPath((await _mediaRoot()).path, item.uri));
     if (await f.exists()) await f.delete();
   }
 

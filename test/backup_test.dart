@@ -96,8 +96,13 @@ void main() {
       hasLength((await a.select(a.exercises).get()).length),
     );
     final media = (await b.select(b.exerciseMedia).get()).single;
-    expect(media.uri, startsWith(docsB.path));
-    expect(await File(media.uri).readAsBytes(), [1, 2, 3, 4]);
+    expect(media.uri, startsWith('media/'));
+    expect(await File('${docsB.path}/${media.uri}').readAsBytes(), [
+      1,
+      2,
+      3,
+      4,
+    ]);
   });
 
   test('restoring notifies live queries', () async {
@@ -120,6 +125,24 @@ void main() {
     await sub.cancel();
     expect(names.first, isEmpty);
     expect(names.last, ['Ada']);
+  });
+
+  test('old backups with absolute media paths restore too', () async {
+    final a = _memoryDb();
+    addTearDown(a.close);
+    await seed(a, docsA);
+    // Before version 3, paths were stored absolute.
+    await a.customStatement(
+      "UPDATE exercise_media SET uri = '${docsA.path}/' || uri",
+    );
+    final zip = await service(a, docsA).export();
+
+    final b = _memoryDb();
+    addTearDown(b.close);
+    await service(b, docsB).restore(zip.path);
+    final media = (await b.select(b.exerciseMedia).get()).single;
+    expect(media.uri, startsWith('media/'));
+    expect(await File('${docsB.path}/${media.uri}').exists(), isTrue);
   });
 
   test('a backup without media drops the media entries', () async {

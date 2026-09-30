@@ -2,6 +2,7 @@ import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 
 import '../../domain/enums.dart';
+import '../media_paths.dart';
 import '../seed/exercise_seed.dart';
 import 'tables.dart';
 
@@ -31,7 +32,7 @@ class AppDatabase extends _$AppDatabase {
     : super(executor ?? driftDatabase(name: 'fitmeasure'));
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -51,6 +52,7 @@ class AppDatabase extends _$AppDatabase {
     },
     onUpgrade: (m, from, to) async {
       if (from < 2) await m.createTable(sessionExercises);
+      if (from < 3) await customStatement(relativizeMediaPathsSql);
     },
     beforeOpen: (details) async {
       await customStatement('PRAGMA foreign_keys = ON');

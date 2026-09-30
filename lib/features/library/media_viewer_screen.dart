@@ -1,19 +1,23 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../data/db/database.dart';
+import '../../data/media_paths.dart';
 import '../../domain/enums.dart';
 
 /// Full-screen view of an image (pinch to zoom) or a video with controls.
-class MediaViewerScreen extends StatelessWidget {
+class MediaViewerScreen extends ConsumerWidget {
   const MediaViewerScreen({super.key, required this.item});
   final MediaItem item;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final path = resolveMediaPath(ref.watch(documentsPathProvider), item.uri);
     return Scaffold(
       backgroundColor: Colors.black,
       extendBodyBehindAppBar: true,
@@ -23,13 +27,13 @@ class MediaViewerScreen extends StatelessWidget {
         title: item.label == null ? null : Text(item.label!),
       ),
       body: item.kind == MediaKind.video
-          ? _VideoView(path: item.uri)
+          ? _VideoView(path: path)
           : Center(
               child: InteractiveViewer(
                 maxScale: 5,
                 child: Hero(
                   tag: 'media-${item.id}',
-                  child: Image.file(File(item.uri)),
+                  child: Image.file(File(path)),
                 ),
               ),
             ),

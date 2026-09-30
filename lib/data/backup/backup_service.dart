@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../domain/enums.dart';
 import '../db/database.dart';
+import '../media_paths.dart';
 
 /// Why a backup couldn't be read or restored, in words for the user.
 class BackupException implements Exception {
@@ -144,7 +145,6 @@ class BackupService {
         'format': _format,
         'schemaVersion': _db.schemaVersion,
         'createdAt': now.toIso8601String(),
-        'mediaRoot': mediaRoot.path,
         'profiles': [for (final pr in profiles) pr.name],
         'workouts': await _count(_db.sessions),
         'measurements': await _count(_db.measurements),
@@ -257,7 +257,7 @@ class BackupService {
       }
 
       await _copyRows(dbCopy.path);
-      await _restoreMedia(archive, manifest['mediaRoot'] as String?);
+      await _restoreMedia(archive);
       _db.markTablesUpdated(_db.allTables);
       return info;
     } finally {
@@ -324,9 +324,10 @@ class BackupService {
     }
   }
 
-  /// Replaces the media folder with the backup's, and points media rows at
-  /// the files' new location. Rows whose file isn't there are dropped.
-  Future<void> _restoreMedia(Archive archive, String? oldRoot) async {
+  /// Replaces the media folder with the backup's. Media paths are made
+  /// relative (older backups stored absolute ones), and rows whose file
+  /// isn't there are dropped.
+  Future<void> _restoreMedia(Archive archive) async {
     final root = await _mediaDir();
     if (await root.exists()) await root.delete(recursive: true);
     await root.create(recursive: true);
@@ -344,24 +345,16 @@ class BackupService {
       await out.close();
     }
 
+    await _db.customStatement(relativizeMediaPathsSql);
+    final documents = (await _documents()).path;
     final media = await (_db.select(
       _db.exerciseMedia,
     )..where((m) => m.kind.equalsValue(MediaKind.link).not())).get();
     for (final m in media) {
-      var uri = m.uri;
-      if (oldRoot != null && p.isWithin(oldRoot, uri)) {
-        uri = p.joinAll([
-          root.path,
-          ...p.split(p.relative(uri, from: oldRoot)),
-        ]);
-      }
-      if (!await File(uri).exists()) {
+      if (!await File(resolveMediaPath(documents, m.uri)).exists()) {
         await (_db.delete(
           _db.exerciseMedia,
         )..where((t) => t.id.equals(m.id))).go();
-      } else if (uri != m.uri) {
-        await (_db.update(_db.exerciseMedia)..where((t) => t.id.equals(m.id)))
-            .write(ExerciseMediaCompanion(uri: Value(uri)));
       }
     }
   }

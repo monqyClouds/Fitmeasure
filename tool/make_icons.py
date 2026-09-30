@@ -1,4 +1,4 @@
-"""Draws the Fitmeasure launcher icons into android/app/src/main/res.
+"""Draws the Fitmeasure launcher icons for Android and iOS.
 
 A lime progress ring around a dumbbell, on the app's dark background.
 Produces the legacy icon, the adaptive icon's foreground and a monochrome
@@ -102,6 +102,30 @@ for density, k in DENSITIES.items():
     # Adaptive layers are 108dp; keep the mark inside the 66dp safe zone.
     save(draw_mark(round(108 * k), 0.56), density, 'ic_launcher_foreground.png')
     save(draw_mark(round(108 * k), 0.56, mono=True), density, 'ic_launcher_monochrome.png')
+
+# iOS: square, opaque icons (iOS rounds the corners itself), sized as the
+# asset catalogue lists them, and the mark for the dark launch screen.
+def ios_icon(size):
+    s = size * SS
+    bg = Image.new('RGBA', (s, s), BG + (255,))
+    light = Image.new('RGBA', (s, s), (0, 0, 0, 0))
+    ImageDraw.Draw(light).ellipse([-s * 0.3, -s * 0.3, s * 0.7, s * 0.7], fill=BG_LIGHT + (255,))
+    bg = Image.alpha_composite(bg, light.filter(ImageFilter.GaussianBlur(s * 0.18)))
+    img = Image.alpha_composite(bg.resize((size, size), Image.LANCZOS), draw_mark(size, 0.62))
+    return img.convert('RGB')
+
+
+IOS_ICONS = 'ios/Runner/Assets.xcassets/AppIcon.appiconset'
+if os.path.isdir(IOS_ICONS):
+    import json
+    with open(os.path.join(IOS_ICONS, 'Contents.json')) as f:
+        catalogue = json.load(f)
+    for entry in catalogue['images']:
+        px = round(float(entry['size'].split('x')[0]) * int(entry['scale'][0]))
+        ios_icon(px).save(os.path.join(IOS_ICONS, entry['filename']), optimize=True)
+    launch = 'ios/Runner/Assets.xcassets/LaunchImage.imageset'
+    for suffix, k in (('', 1), ('@2x', 2), ('@3x', 3)):
+        draw_mark(120 * k, 0.9).save(os.path.join(launch, f'LaunchImage{suffix}.png'), optimize=True)
 
 # A large copy for the README and store-style listings.
 os.makedirs('assets/icon', exist_ok=True)

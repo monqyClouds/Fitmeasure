@@ -1,4 +1,5 @@
 import 'package:animations/animations.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 /// Neutral palette for the dark UI. The accent comes from the active profile.
@@ -130,10 +131,8 @@ ThemeData buildTheme(Color accent) {
         transitionType: SharedAxisTransitionType.horizontal,
         fillColor: AppColors.background,
       ),
-      TargetPlatform.iOS: SharedAxisPageTransitionsBuilder(
-        transitionType: SharedAxisTransitionType.horizontal,
-        fillColor: AppColors.background,
-      ),
+      // Native slide, which keeps the swipe-from-the-edge back gesture.
+      TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
       TargetPlatform.linux: SharedAxisPageTransitionsBuilder(
         transitionType: SharedAxisTransitionType.horizontal,
         fillColor: AppColors.background,

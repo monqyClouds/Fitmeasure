@@ -241,8 +241,9 @@ void main() {
     expect(media, hasLength(2));
     final video = media.firstWhere((m) => m.kind == MediaKind.video);
     expect(video.label, 'Form Check');
-    expect(video.uri, startsWith(tmp.path));
-    expect(await File(video.uri).readAsBytes(), [1, 2, 3]);
+    // Stored relative to the documents folder, which moves on iOS.
+    expect(video.uri, startsWith('media/$a/'));
+    expect(await File('${tmp.path}/${video.uri}').readAsBytes(), [1, 2, 3]);
     expect(media.firstWhere((m) => m.kind == MediaKind.link).label, isNull);
 
     int count(List<ExerciseWithMedia> lib) =>
@@ -251,7 +252,7 @@ void main() {
     expect(count(await exercises.watchLibrary(b).first), 0);
 
     await exercises.deleteMedia(video);
-    expect(await File(video.uri).exists(), isFalse);
+    expect(await File('${tmp.path}/${video.uri}').exists(), isFalse);
     expect(await exercises.watchMedia(bench.id, a).first, hasLength(1));
   });
 

@@ -1,6 +1,7 @@
 # Fitmeasure
 
-A gym workout and body-measurement tracker for Android, built with Flutter.
+A gym workout and body-measurement tracker for Android and iPhone, built with
+Flutter.
 Several people can share one phone, each with their own profile. All data stays
 on the device. Units are metric: kg, cm and km.
 
@@ -61,9 +62,11 @@ Done (phase 4):
 
 ## Getting the app on your phone
 
-Every push builds an APK on GitHub Actions:
+Every push builds an Android APK and an iPhone app on GitHub Actions.
 
-1. Open the repository on GitHub, go to **Actions**, then **Android**, and pick
+### Android
+
+1. Open the repository on GitHub, go to **Actions**, then **Build**, and pick
    the latest run.
 2. Download the **fitmeasure-apk** artifact and unzip it.
 3. Copy `app-release.apk` to your phone and open it. Allow installing from
@@ -92,6 +95,42 @@ Then add these repository secrets on GitHub (**Settings → Secrets and variable
 | `ANDROID_KEY_ALIAS` | `fitmeasure` |
 
 Keep `fitmeasure.jks` somewhere safe and never commit it.
+
+### iPhone (free Apple ID)
+
+iOS apps can only be built on a Mac, so GitHub Actions builds an unsigned
+`.ipa` on a Mac runner. You sign and install it from Windows with
+[Sideloadly](https://sideloadly.io) and a free Apple ID. The catch: apps
+signed with a free Apple ID stop opening after 7 days and have to be
+installed again (your data is kept when you install over the app).
+
+One-time setup:
+
+1. On Windows, install **iTunes** and **iCloud** from Apple's website (not
+   the Microsoft Store versions), then install Sideloadly.
+2. Connect the iPhone by USB and tap **Trust** on the phone.
+3. On iOS 16 or later, turn on **Settings → Privacy & Security → Developer
+   Mode** (the phone restarts).
+
+Each install (and every 7 days):
+
+1. In GitHub, **Actions → Build → latest run**, download
+   **fitmeasure-ios-unsigned** and unzip it to get `fitmeasure-unsigned.ipa`.
+2. Open Sideloadly, pick the iPhone, drag in the `.ipa`, enter your Apple ID
+   and press **Start**. A spare Apple ID is a sensible choice here.
+3. The first time: on the iPhone, **Settings → General → VPN & Device
+   Management**, tap your Apple ID and **Trust** it.
+
+Notes:
+
+- If Sideloadly says the bundle ID is unavailable, set a different one under
+  its advanced options (e.g. `com.<yourname>.fitmeasure`) and keep using that
+  same one, or the next install becomes a separate app without your data.
+- A free Apple ID can have at most 3 sideloaded apps at a time.
+- Sideloadly can refresh the app automatically before the 7 days run out
+  while the phone and PC are on the same Wi-Fi.
+- Back up from **Settings & backup** in the app now and then: if the app is
+  ever deleted, restoring the backup brings everything back.
 
 ## Development
 
