@@ -1,0 +1,5 @@
+package com.fitmeasure.fitmeasure
+
+import io.flutter.embedding.android.FlutterActivity
+
+class MainActivity : FlutterActivity()
