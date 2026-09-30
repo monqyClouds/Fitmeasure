@@ -14,8 +14,11 @@ class CycleRepo {
             ..orderBy([(c) => OrderingTerm.desc(c.startDate)]))
           .watch();
 
-  /// Saves a cycle. Any other cycle still running when this one starts is
-  /// ended the day before, so at most one cycle is active at a time.
+  /// Saves a cycle, keeping cycles from overlapping so at most one is active
+  /// on any day. An earlier cycle still running when this one starts is ended
+  /// the day before. An open-ended cycle placed before a later one ends the
+  /// day before that one starts. Any other overlap with a later cycle (or one
+  /// starting the same day) throws [CycleOverlapException] and saves nothing.
   Future<int> save({
     int? id,
     required int profileId,
@@ -27,19 +30,37 @@ class CycleRepo {
     String? notes,
   }) {
     final start = dateOnly(startDate);
-    final end = endDate == null ? null : dateOnly(endDate);
+    final requestedEnd = endDate == null ? null : dateOnly(endDate);
     return _db.transaction(() async {
-      final overlapping =
-          await (_db.select(_db.cycles)..where(
-                (c) =>
-                    c.profileId.equals(profileId) &
-                    c.startDate.isSmallerThanValue(start) &
-                    (c.endDate.isNull() |
-                        c.endDate.isBiggerOrEqualValue(start)),
-              ))
-              .get();
+      final others =
+          (await (_db.select(
+            _db.cycles,
+          )..where((c) => c.profileId.equals(profileId))).get()).where(
+            (c) => c.id != id,
+          );
+
+      // The first cycle starting on or after this one is the only later
+      // cycle that can overlap it.
+      Cycle? next;
+      for (final c in others) {
+        if (c.startDate.isBefore(start)) continue;
+        if (next == null || c.startDate.isBefore(next.startDate)) next = c;
+      }
+      var end = requestedEnd;
+      if (next != null) {
+        if (end == null && next.startDate.isAfter(start)) {
+          end = next.startDate.subtract(const Duration(days: 1));
+        } else if (end == null || !end.isBefore(next.startDate)) {
+          throw CycleOverlapException(next);
+        }
+      }
+
+      final overlapping = others.where(
+        (c) =>
+            c.startDate.isBefore(start) &&
+            (c.endDate == null || !c.endDate!.isBefore(start)),
+      );
       for (final c in overlapping) {
-        if (c.id == id) continue;
         await (_db.update(_db.cycles)..where((t) => t.id.equals(c.id))).write(
           CyclesCompanion(
             endDate: Value(start.subtract(const Duration(days: 1))),
@@ -73,6 +94,19 @@ class CycleRepo {
 
   Future<void> delete(int id) =>
       (_db.delete(_db.cycles)..where((c) => c.id.equals(id))).go();
+}
+
+/// Thrown when a cycle being saved would overlap [other], a cycle starting
+/// on or after it.
+class CycleOverlapException implements Exception {
+  const CycleOverlapException(this.other);
+  final Cycle other;
+
+  @override
+  String toString() =>
+      'Overlaps with "${other.name}" '
+      '(${formatDateRange(other.startDate, other.endDate)}). '
+      'Change the dates, or edit that cycle instead.';
 }
 
 extension CycleX on Cycle {

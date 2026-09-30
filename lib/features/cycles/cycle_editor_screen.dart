@@ -88,18 +88,26 @@ class _CycleEditorScreenState extends ConsumerState<CycleEditorScreen> {
     final name = _name.text.trim().isEmpty
         ? '${_type.label} ${formatShortDate(_start)}'
         : _name.text.trim();
-    await ref
-        .read(cycleRepoProvider)
-        .save(
-          id: widget.cycle?.id,
-          profileId: profileId,
-          type: _type,
-          name: name,
-          startDate: _start,
-          endDate: _end,
-          goalWeightKg: double.tryParse(_goal.text.replaceAll(',', '.')),
-          notes: _notes.text,
-        );
+    try {
+      await ref
+          .read(cycleRepoProvider)
+          .save(
+            id: widget.cycle?.id,
+            profileId: profileId,
+            type: _type,
+            name: name,
+            startDate: _start,
+            endDate: _end,
+            goalWeightKg: double.tryParse(_goal.text.replaceAll(',', '.')),
+            notes: _notes.text,
+          );
+    } on CycleOverlapException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
+      }
+      return;
+    }
     if (mounted) Navigator.pop(context);
   }
 

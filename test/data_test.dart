@@ -84,6 +84,105 @@ void main() {
     expect(routine.endDate, DateTime(2026, 2, 28));
   });
 
+  test('a cycle starting the same day as another is rejected', () async {
+    final pid = await profiles.create(name: 'Ada', color: 1);
+    await cycles.save(
+      profileId: pid,
+      type: CycleType.routine,
+      name: 'Routine',
+      startDate: DateTime(2026, 3, 1),
+    );
+    await expectLater(
+      cycles.save(
+        profileId: pid,
+        type: CycleType.bulk,
+        name: 'Bulk',
+        startDate: DateTime(2026, 3, 1),
+        endDate: DateTime(2026, 5, 23),
+      ),
+      throwsA(isA<CycleOverlapException>()),
+    );
+    final list = await cycles.watchForProfile(pid).first;
+    expect(list.single.name, 'Routine');
+    expect(list.single.endDate, isNull);
+  });
+
+  test('an open-ended cycle before a later one ends the day before', () async {
+    final pid = await profiles.create(name: 'Ada', color: 1);
+    await cycles.save(
+      profileId: pid,
+      type: CycleType.bulk,
+      name: 'Bulk',
+      startDate: DateTime(2026, 3, 1),
+      endDate: DateTime(2026, 5, 23),
+    );
+    final routine = await cycles.save(
+      profileId: pid,
+      type: CycleType.routine,
+      name: 'Routine',
+      startDate: DateTime(2026, 1, 1),
+    );
+    final list = await cycles.watchForProfile(pid).first;
+    expect(
+      list.firstWhere((c) => c.id == routine).endDate,
+      DateTime(2026, 2, 28),
+    );
+    expect(
+      list.firstWhere((c) => c.name == 'Bulk').endDate,
+      DateTime(2026, 5, 23),
+    );
+  });
+
+  test('a fixed-length cycle running into a later one is rejected', () async {
+    final pid = await profiles.create(name: 'Ada', color: 1);
+    await cycles.save(
+      profileId: pid,
+      type: CycleType.bulk,
+      name: 'Bulk',
+      startDate: DateTime(2026, 3, 1),
+    );
+    await expectLater(
+      cycles.save(
+        profileId: pid,
+        type: CycleType.cut,
+        name: 'Cut',
+        startDate: DateTime(2026, 2, 1),
+        endDate: DateTime(2026, 3, 1),
+      ),
+      throwsA(isA<CycleOverlapException>()),
+    );
+    // Ending the day before is fine.
+    await cycles.save(
+      profileId: pid,
+      type: CycleType.cut,
+      name: 'Cut',
+      startDate: DateTime(2026, 2, 1),
+      endDate: DateTime(2026, 2, 28),
+    );
+    expect(await cycles.watchForProfile(pid).first, hasLength(2));
+  });
+
+  test('editing a cycle does not conflict with itself', () async {
+    final pid = await profiles.create(name: 'Ada', color: 1);
+    final id = await cycles.save(
+      profileId: pid,
+      type: CycleType.bulk,
+      name: 'Bulk',
+      startDate: DateTime(2026, 3, 1),
+    );
+    await cycles.save(
+      id: id,
+      profileId: pid,
+      type: CycleType.strength,
+      name: 'Strength',
+      startDate: DateTime(2026, 3, 1),
+      endDate: DateTime(2026, 4, 25),
+    );
+    final c = (await cycles.watchForProfile(pid).first).single;
+    expect(c.type, CycleType.strength);
+    expect(c.endDate, DateTime(2026, 4, 25));
+  });
+
   test('cycle week maths', () async {
     final pid = await profiles.create(name: 'Ada', color: 1);
     await cycles.save(
