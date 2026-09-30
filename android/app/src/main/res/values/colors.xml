@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches AppColors.background, so launch and app share one colour. -->
+    <color name="fm_background">#0C0D11</color>
+    <color name="ic_launcher_background">#0C0D11</color>
+</resources>

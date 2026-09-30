@@ -197,7 +197,6 @@ class _Welcome extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
-    final accent = Theme.of(context).colorScheme.primary;
     return Padding(
       padding: const EdgeInsets.fromLTRB(28, 24, 28, 28),
       child: Column(
@@ -205,18 +204,10 @@ class _Welcome extends StatelessWidget {
         children: [
           const Spacer(flex: 2),
           FadeSlideIn(
-            child: Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(
-                color: accent,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Icon(
-                Icons.fitness_center_rounded,
-                color: onColor(accent),
-                size: 30,
-              ),
+            child: Image.asset(
+              'assets/icon/icon-512.png',
+              width: 80,
+              height: 80,
             ),
           ),
           const SizedBox(height: 32),

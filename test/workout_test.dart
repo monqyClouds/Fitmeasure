@@ -381,6 +381,11 @@ void main() {
   });
 
   test('upgrading a version 1 database adds the workout table', () async {
+    // Opens a second database alongside the one from setUp, on purpose.
+    driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+    addTearDown(
+      () => driftRuntimeOptions.dontWarnAboutMultipleDatabases = false,
+    );
     final dir = await Directory.systemTemp.createTemp('fitmeasure_migration');
     addTearDown(() => dir.delete(recursive: true));
     final file = File('${dir.path}/db.sqlite');

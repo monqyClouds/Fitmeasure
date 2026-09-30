@@ -1,11 +1,16 @@
+import 'dart:io';
+
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:fitmeasure/app/app.dart';
 import 'package:fitmeasure/app/providers.dart';
+import 'package:fitmeasure/data/backup/backup_service.dart';
 import 'package:fitmeasure/data/db/database.dart';
 import 'package:fitmeasure/data/repos/profile_repo.dart';
+import 'package:fitmeasure/data/repos/settings_repo.dart';
 import 'package:fitmeasure/features/cycles/cycle_editor_screen.dart';
 import 'package:fitmeasure/features/progress/exercise_progress_screen.dart';
+import 'package:fitmeasure/features/settings/settings_screen.dart';
 import 'package:fitmeasure/features/workout/workout_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -221,5 +226,63 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('82.5 kg'), findsOneWidget);
     expect(find.text('BODY'), findsOneWidget);
+  });
+
+  testWidgets('settings: backup summary and keep-screen-on switch', (
+    tester,
+  ) async {
+    final db = AppDatabase(
+      DatabaseConnection(
+        NativeDatabase.memory(),
+        closeStreamsSynchronously: true,
+      ),
+    );
+    addTearDown(db.close);
+    final pid = await ProfileRepo(db).create(name: 'Sam', color: 0xFFB8F34A);
+    // Plugins for app folders don't exist in tests; use a temp folder.
+    final dir = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('fitmeasure_settings'),
+    ))!;
+    addTearDown(() => dir.delete(recursive: true));
+    final container = ProviderContainer(
+      overrides: [
+        databaseProvider.overrideWithValue(db),
+        backupServiceProvider.overrideWithValue(
+          BackupService(db, documents: () async => dir, temp: () async => dir),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(currentProfileIdProvider.notifier).select(pid);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const FitmeasureApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The avatar opens the profile menu.
+    await tester.tap(find.text('S').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Settings & backup'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SettingsScreen), findsOneWidget);
+    expect(find.text('Back up'), findsOneWidget);
+    // The stats read files, which needs real (not fake) time to finish.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 300)),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('people'), findsOneWidget);
+    expect(find.text('Undo last restore'), findsNothing);
+
+    final repo = SettingsRepo(db);
+    expect(await repo.getBool(SettingsRepo.keepAwake, fallback: true), isTrue);
+    await tester.scrollUntilVisible(find.text('Keep screen on'), 200);
+    await tester.tap(find.text('Keep screen on'));
+    await tester.pumpAndSettle();
+    expect(await repo.getBool(SettingsRepo.keepAwake, fallback: true), isFalse);
   });
 }

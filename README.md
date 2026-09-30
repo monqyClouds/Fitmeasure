@@ -49,9 +49,15 @@ Done (phase 3):
 - **Personal records**: best 1RM, heaviest set, best volume and more per
   exercise, and recent records on Progress.
 
-Planned:
+Done (phase 4):
 
-- **Phase 4**: backup export and import, and polish.
+- **Backup and restore**: one `.zip` with everything (optionally without
+  photos and videos). Share it to Drive, email or a chat, or save it to the
+  phone. Restoring replaces all data, works across phones, refuses backups
+  from newer app versions, and keeps a restore point so it can be undone.
+- **Polish**: the screen stays on during workouts (can be turned off), an app
+  icon and dark launch screen, and a Settings screen (profile menu → Settings
+  & backup).
 
 ## Getting the app on your phone
 
@@ -96,12 +102,21 @@ flutter test
 dart run build_runner build            # after changing database tables
 ```
 
+### App icon
+
+The launcher icons are drawn by `tool/make_icons.py` (needs Pillow):
+
+```sh
+python3 tool/make_icons.py
+```
+
 ### Layout
 
 ```
 lib/
   app/        app root, theme and motion tokens, Riverpod providers
-  data/       drift database (tables, generated code), seed data, repositories
+  data/       drift database (tables, generated code), seed data, repositories,
+              backup
   domain/     enums (cycle types, muscle groups…) and date helpers
   features/   one folder per area: profiles, today, cycles, library, …
   widgets/    shared widgets and animation helpers

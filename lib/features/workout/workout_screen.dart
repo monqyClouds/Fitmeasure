@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../app/providers.dart';
 import '../../app/theme.dart';
@@ -28,6 +29,22 @@ class WorkoutScreen extends ConsumerStatefulWidget {
 
 class _WorkoutScreenState extends ConsumerState<WorkoutScreen> {
   var _closing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _applyWakelock(ref.read(keepAwakeProvider).value ?? true);
+  }
+
+  @override
+  void dispose() {
+    // The screen may sleep again once the workout is closed.
+    WakelockPlus.disable().ignore();
+    super.dispose();
+  }
+
+  void _applyWakelock(bool on) =>
+      (on ? WakelockPlus.enable() : WakelockPlus.disable()).ignore();
 
   SessionRepo get _repo => ref.read(sessionRepoProvider);
 
@@ -107,6 +124,9 @@ class _WorkoutScreenState extends ConsumerState<WorkoutScreen> {
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
     final accent = Theme.of(context).colorScheme.primary;
+    ref.listen(keepAwakeProvider, (_, next) {
+      if (next.value case final on?) _applyWakelock(on);
+    });
     final async = ref.watch(workoutProvider(widget.sessionId));
     final w = async.value;
     if (w == null) {

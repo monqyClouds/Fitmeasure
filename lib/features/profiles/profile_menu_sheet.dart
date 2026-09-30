@@ -5,11 +5,14 @@ import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../widgets/common.dart';
 import '../cycles/cycles_screen.dart';
+import '../settings/settings_screen.dart';
 import 'profile_editor_sheet.dart';
 
 Future<void> showProfileMenu(BuildContext context) {
   return showModalBottomSheet<void>(
     context: context,
+    // Sized to its content (it grows with each profile), scrolling if needed.
+    isScrollControlled: true,
     builder: (_) => const _ProfileMenu(),
   );
 }
@@ -27,7 +30,7 @@ class _ProfileMenu extends ConsumerWidget {
     if (profile == null) return const SizedBox.shrink();
 
     return SafeArea(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.only(bottom: 12),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -63,6 +66,17 @@ class _ProfileMenu extends ConsumerWidget {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const CyclesScreen()),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.settings_outlined),
+              title: const Text('Settings & backup'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
                 );
               },
             ),

@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/backup/backup_service.dart';
 import '../data/db/database.dart';
 import '../data/repos/cycle_repo.dart';
 import '../data/repos/exercise_repo.dart';
@@ -7,6 +8,7 @@ import '../data/repos/measurement_repo.dart';
 import '../data/repos/plan_repo.dart';
 import '../data/repos/profile_repo.dart';
 import '../data/repos/session_repo.dart';
+import '../data/repos/settings_repo.dart';
 import '../data/repos/strength_repo.dart';
 import '../domain/strength.dart';
 
@@ -35,6 +37,12 @@ final measurementRepoProvider = Provider(
 );
 final strengthRepoProvider = Provider(
   (ref) => StrengthRepo(ref.watch(databaseProvider)),
+);
+final settingsRepoProvider = Provider(
+  (ref) => SettingsRepo(ref.watch(databaseProvider)),
+);
+final backupServiceProvider = Provider(
+  (ref) => BackupService(ref.watch(databaseProvider)),
 );
 
 // --- Profiles --------------------------------------------------------------
@@ -207,3 +215,12 @@ final exerciseTrendProvider = StreamProvider.autoDispose
           .watch(strengthRepoProvider)
           .watchTrend(requireProfileId(ref), exerciseId),
     );
+
+// --- Settings --------------------------------------------------------------
+
+/// Keep the screen on while a workout is open. On unless turned off.
+final keepAwakeProvider = StreamProvider<bool>(
+  (ref) => ref
+      .watch(settingsRepoProvider)
+      .watchBool(SettingsRepo.keepAwake, fallback: true),
+);
