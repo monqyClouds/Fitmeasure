@@ -6,6 +6,7 @@ import '../../app/theme.dart';
 import '../../data/db/database.dart';
 import '../../widgets/common.dart';
 import '../../widgets/motion.dart';
+import '../../widgets/visuals.dart';
 import 'profile_editor_sheet.dart';
 
 class ProfilePickerScreen extends ConsumerWidget {
@@ -24,71 +25,76 @@ class ProfilePickerScreen extends ConsumerWidget {
     final t = Theme.of(context).textTheme;
 
     return Scaffold(
-      body: SafeArea(
-        child: profiles.when(
-          loading: () => const SizedBox.shrink(),
-          error: (e, _) => Center(child: Text('$e')),
-          data: (list) {
-            if (list.isEmpty) {
-              return _Welcome(onStart: () => _add(context, ref));
-            }
-            return CustomScrollView(
-              slivers: [
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(24, 56, 24, 32),
-                  sliver: SliverToBoxAdapter(
-                    child: FadeSlideIn(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text("Who's training?", style: t.displaySmall),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Pick your profile to continue',
-                            style: t.bodyLarge!.copyWith(
-                              color: AppColors.textSecondary,
+      body: GlowBackdrop(
+        color: Theme.of(context).colorScheme.primary,
+        secondary: AppColors.profileColors[1],
+        height: 420,
+        child: SafeArea(
+          child: profiles.when(
+            loading: () => const SizedBox.shrink(),
+            error: (e, _) => Center(child: Text('$e')),
+            data: (list) {
+              if (list.isEmpty) {
+                return _Welcome(onStart: () => _add(context, ref));
+              }
+              return CustomScrollView(
+                slivers: [
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(24, 56, 24, 32),
+                    sliver: SliverToBoxAdapter(
+                      child: FadeSlideIn(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text("Who's training?", style: t.displaySmall),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Pick your profile to continue',
+                              style: t.bodyLarge!.copyWith(
+                                color: AppColors.textSecondary,
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                SliverPadding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  sliver: SliverGrid.count(
-                    crossAxisCount: 2,
-                    mainAxisSpacing: 14,
-                    crossAxisSpacing: 14,
-                    childAspectRatio: 0.92,
-                    children: [
-                      for (final (i, p) in list.indexed)
-                        FadeSlideIn.staggered(
-                          index: i + 1,
-                          child: _ProfileCard(profile: p),
+                          ],
                         ),
-                      FadeSlideIn.staggered(
-                        index: list.length + 1,
-                        child: _AddCard(onTap: () => _add(context, ref)),
-                      ),
-                    ],
-                  ),
-                ),
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.all(32),
-                    child: Text(
-                      'Long-press a profile to edit it',
-                      textAlign: TextAlign.center,
-                      style: t.bodySmall!.copyWith(
-                        color: AppColors.textTertiary,
                       ),
                     ),
                   ),
-                ),
-              ],
-            );
-          },
+                  SliverPadding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    sliver: SliverGrid.count(
+                      crossAxisCount: 2,
+                      mainAxisSpacing: 14,
+                      crossAxisSpacing: 14,
+                      childAspectRatio: 0.92,
+                      children: [
+                        for (final (i, p) in list.indexed)
+                          FadeSlideIn.staggered(
+                            index: i + 1,
+                            child: _ProfileCard(profile: p),
+                          ),
+                        FadeSlideIn.staggered(
+                          index: list.length + 1,
+                          child: _AddCard(onTap: () => _add(context, ref)),
+                        ),
+                      ],
+                    ),
+                  ),
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.all(32),
+                      child: Text(
+                        'Long-press a profile to edit it',
+                        textAlign: TextAlign.center,
+                        style: t.bodySmall!.copyWith(
+                          color: AppColors.textTertiary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
         ),
       ),
     );

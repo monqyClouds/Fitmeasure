@@ -118,6 +118,24 @@ class Sessions extends Table {
   TextColumn get notes => text().nullable()();
 }
 
+/// An exercise in a workout, with the targets copied from the plan when the
+/// workout starts (or cycle defaults when added during it), so the workout
+/// can be resumed and plan edits don't change it.
+class SessionExercises extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  IntColumn get sessionId =>
+      integer().references(Sessions, #id, onDelete: KeyAction.cascade)();
+  IntColumn get exerciseId =>
+      integer().references(Exercises, #id, onDelete: KeyAction.cascade)();
+  IntColumn get position => integer()();
+  IntColumn get targetSets => integer()();
+  IntColumn get targetReps => integer().nullable()();
+  RealColumn get targetWeightKg => real().nullable()();
+  IntColumn get targetDurationSec => integer().nullable()();
+  RealColumn get targetDistanceKm => real().nullable()();
+  IntColumn get restSec => integer().nullable()();
+}
+
 /// One performed set. Targets are copied from the plan at logging time so
 /// history stays accurate when the plan is edited later.
 class SetLogs extends Table {

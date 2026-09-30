@@ -218,3 +218,42 @@ Future<bool> confirmDialog(
   );
   return result ?? false;
 }
+
+/// Asks for a single line of text, e.g. a new name. Null when cancelled or
+/// left empty.
+Future<String?> promptText(
+  BuildContext context, {
+  required String title,
+  String initial = '',
+  String confirmLabel = 'Save',
+}) async {
+  final controller = TextEditingController(text: initial);
+  final result = await showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        textCapitalization: TextCapitalization.sentences,
+        onSubmitted: (v) => Navigator.pop(context, v),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text(
+            'Cancel',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, controller.text),
+          child: Text(confirmLabel),
+        ),
+      ],
+    ),
+  );
+  // Not disposed here: the dialog still uses it while animating closed.
+  final text = result?.trim();
+  return text == null || text.isEmpty ? null : text;
+}

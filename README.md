@@ -20,12 +20,27 @@ Done (phase 1):
   app's own storage, so the link never breaks. Web links (YouTube etc.) open
   externally.
 
+Done (phase 2):
+
+- **Plans**: weekly plans (each day on a weekday) or rotations (Push, Pull,
+  Legs… in turn, whenever you train). Start from a template (Push / Pull /
+  Legs, Upper / Lower, Full body ×3) or build your own. Each exercise gets
+  target sets, reps, weight, time or distance and rest, suggested by the
+  current cycle.
+- **Today**: this week at a glance, today's planned workout (or a rest day and
+  what's next), a resume card for a workout in progress, and recent workouts
+  with a volume chart.
+- **Workout logging**: tick off each set against its target, with values from
+  last time shown and prefilled, a rest timer that vibrates when rest is over,
+  elapsed time and volume. Add or remove exercises and sets as you go. A
+  summary at the end highlights new personal bests.
+- **Progress**: week streak, training calendar heatmap, weekly volume and
+  totals.
+
 Planned:
 
-- **Phase 2**: weekly or rotating plans with target sets, reps, weight and time.
-  Logging actual sets against targets, with a rest timer and session timing.
-- **Phase 3**: body measurements and charts (trends shaded by cycle, a training
-  calendar heatmap, volume, personal records).
+- **Phase 3**: body measurements and charts (trends shaded by cycle, strength
+  per exercise, personal records).
 - **Phase 4**: backup export and import, and polish.
 
 ## Getting the app on your phone

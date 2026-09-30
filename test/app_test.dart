@@ -3,7 +3,9 @@ import 'package:drift/native.dart';
 import 'package:fitmeasure/app/app.dart';
 import 'package:fitmeasure/app/providers.dart';
 import 'package:fitmeasure/data/db/database.dart';
+import 'package:fitmeasure/data/repos/profile_repo.dart';
 import 'package:fitmeasure/features/cycles/cycle_editor_screen.dart';
+import 'package:fitmeasure/features/workout/workout_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -39,9 +41,10 @@ void main() {
 
     expect(find.text('Sam'), findsOneWidget);
     expect(find.byType(TextField), findsNothing);
-    expect(find.text('Start a cycle'), findsOneWidget);
+    expect(find.text('Plan your training'), findsOneWidget);
 
     // Start a cycle with the defaults.
+    await tester.scrollUntilVisible(find.text('Start a cycle'), 200);
     await tester.tap(find.text('Start a cycle'));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
@@ -56,6 +59,7 @@ void main() {
     );
     await tester.tap(find.text('Start cycle'));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Week '), 200);
     expect(find.text('Week '), findsOneWidget);
     expect(find.textContaining('of 12'), findsOneWidget);
 
@@ -68,5 +72,88 @@ void main() {
     await tester.tap(find.text('Bench Press'));
     await tester.pumpAndSettle();
     expect(find.text('Add a form video or photo'), findsOneWidget);
+  });
+
+  testWidgets('plan from a template, log a set, finish the workout', (
+    tester,
+  ) async {
+    final db = AppDatabase(
+      DatabaseConnection(
+        NativeDatabase.memory(),
+        closeStreamsSynchronously: true,
+      ),
+    );
+    addTearDown(db.close);
+    final pid = await ProfileRepo(db).create(name: 'Sam', color: 0xFFB8F34A);
+    final container = ProviderContainer(
+      overrides: [databaseProvider.overrideWithValue(db)],
+    );
+    addTearDown(container.dispose);
+    await container.read(currentProfileIdProvider.notifier).select(pid);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const FitmeasureApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Pick the Push / Pull / Legs template on the Plans tab.
+    await tester.tap(find.text('Plans'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Push / Pull / Legs'));
+    await tester.pumpAndSettle();
+    expect(find.text('Follow this plan on Today'), findsNothing); // active
+    expect(find.text('Push'), findsWidgets);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    // Today offers the first day of the rotation.
+    await tester.tap(find.text('Today'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Start workout'), 200);
+    await tester.ensureVisible(find.text('Start workout'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Start workout'));
+    await tester.pumpAndSettle();
+    expect(find.byType(WorkoutScreen), findsOneWidget);
+    expect(find.text('Bench Press'), findsOneWidget);
+    expect(find.text('of 15 sets'), findsOneWidget);
+
+    // Tick off the first set; its reps are prefilled from the target.
+    await tester.tap(find.byIcon(Icons.check_rounded).first);
+    // The rest countdown animates continuously, so pump rather than settle.
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('Resting'), findsOneWidget);
+    expect(find.text('1/3'), findsOneWidget);
+    await tester.tap(find.byTooltip('Skip rest'));
+    await tester.pumpAndSettle();
+    expect(find.text('Resting'), findsNothing);
+
+    await tester.scrollUntilVisible(
+      find.text('Finish workout'),
+      300,
+      scrollable: find
+          .byWidgetPredicate(
+            (w) => w is Scrollable && w.axisDirection == AxisDirection.down,
+          )
+          .first,
+    );
+    await tester.ensureVisible(find.text('Finish workout'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Finish workout'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Finish'));
+    await tester.pumpAndSettle();
+    expect(find.text('Workout complete'), findsOneWidget);
+
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    // Today now shows the day as done, and the workout in history.
+    expect(find.text('Train it again'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('RECENT WORKOUTS'), 200);
+    expect(find.text('RECENT WORKOUTS'), findsOneWidget);
   });
 }

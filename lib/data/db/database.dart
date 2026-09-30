@@ -19,6 +19,7 @@ part 'database.g.dart';
     PlanDays,
     PlanItems,
     Sessions,
+    SessionExercises,
     SetLogs,
     MeasurementTypes,
     Measurements,
@@ -30,7 +31,7 @@ class AppDatabase extends _$AppDatabase {
     : super(executor ?? driftDatabase(name: 'fitmeasure'));
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -47,6 +48,9 @@ class AppDatabase extends _$AppDatabase {
             ),
         ]);
       });
+    },
+    onUpgrade: (m, from, to) async {
+      if (from < 2) await m.createTable(sessionExercises);
     },
     beforeOpen: (details) async {
       await customStatement('PRAGMA foreign_keys = ON');

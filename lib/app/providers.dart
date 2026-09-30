@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/db/database.dart';
 import '../data/repos/cycle_repo.dart';
 import '../data/repos/exercise_repo.dart';
+import '../data/repos/plan_repo.dart';
 import '../data/repos/profile_repo.dart';
+import '../data/repos/session_repo.dart';
 
 /// Overridden in main() (and in tests) with a concrete database.
 final databaseProvider = Provider<AppDatabase>(
@@ -18,6 +20,12 @@ final cycleRepoProvider = Provider(
 );
 final exerciseRepoProvider = Provider(
   (ref) => ExerciseRepo(ref.watch(databaseProvider)),
+);
+final planRepoProvider = Provider(
+  (ref) => PlanRepo(ref.watch(databaseProvider)),
+);
+final sessionRepoProvider = Provider(
+  (ref) => SessionRepo(ref.watch(databaseProvider)),
 );
 
 // --- Profiles --------------------------------------------------------------
@@ -87,3 +95,74 @@ final exerciseMediaProvider = StreamProvider.autoDispose
       final profileId = requireProfileId(ref);
       return ref.watch(exerciseRepoProvider).watchMedia(exerciseId, profileId);
     });
+
+// --- Plans -----------------------------------------------------------------
+
+final plansProvider = StreamProvider<List<PlanOverview>>((ref) {
+  final id = ref.watch(currentProfileIdProvider);
+  if (id == null) return Stream.value(const []);
+  return ref.watch(planRepoProvider).watchPlans(id);
+});
+
+final planProvider = StreamProvider.autoDispose.family<Plan?, int>(
+  (ref, id) => ref.watch(planRepoProvider).watchPlan(id),
+);
+
+final planDaysProvider = StreamProvider.autoDispose
+    .family<List<PlanDayDetail>, int>(
+      (ref, planId) => ref.watch(planRepoProvider).watchDays(planId),
+    );
+
+/// What the active plan says to train today.
+final todayPlanProvider = StreamProvider<TodayPlan?>((ref) {
+  final id = ref.watch(currentProfileIdProvider);
+  if (id == null) return Stream.value(null);
+  return ref.watch(planRepoProvider).watchToday(id);
+});
+
+// --- Workouts --------------------------------------------------------------
+
+/// The unfinished workout of the current profile, if any.
+final activeSessionProvider = StreamProvider<Session?>((ref) {
+  final id = ref.watch(currentProfileIdProvider);
+  if (id == null) return Stream.value(null);
+  return ref.watch(sessionRepoProvider).watchActive(id);
+});
+
+final workoutProvider = StreamProvider.autoDispose.family<Workout?, int>(
+  (ref, sessionId) => ref.watch(sessionRepoProvider).watchWorkout(sessionId),
+);
+
+final recentSessionsProvider = StreamProvider<List<SessionSummary>>((ref) {
+  final id = ref.watch(currentProfileIdProvider);
+  if (id == null) return Stream.value(const []);
+  return ref.watch(sessionRepoProvider).watchRecent(id);
+});
+
+/// Sets of an exercise from the last finished workout other than the given
+/// session, keyed by (exercise id, session id).
+final lastSetsProvider = FutureProvider.autoDispose
+    .family<List<SetLog>, (int, int)>((ref, key) {
+      final (exerciseId, sessionId) = key;
+      return ref
+          .watch(sessionRepoProvider)
+          .lastSets(
+            profileId: requireProfileId(ref),
+            exerciseId: exerciseId,
+            excludeSessionId: sessionId,
+          );
+    });
+
+/// Exercises where a workout set a new heaviest weight, with the weight.
+final weightRecordsProvider = FutureProvider.autoDispose
+    .family<Map<int, double>, int>(
+      (ref, sessionId) =>
+          ref.watch(sessionRepoProvider).weightRecords(sessionId),
+    );
+
+/// Every finished workout of the current profile, for Progress.
+final allSessionsProvider = StreamProvider<List<SessionSummary>>((ref) {
+  final id = ref.watch(currentProfileIdProvider);
+  if (id == null) return Stream.value(const []);
+  return ref.watch(sessionRepoProvider).watchRecent(id, limit: 100000);
+});

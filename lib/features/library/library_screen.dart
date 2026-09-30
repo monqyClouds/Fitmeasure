@@ -8,6 +8,7 @@ import '../../data/repos/exercise_repo.dart';
 import '../../domain/enums.dart';
 import '../../widgets/common.dart';
 import '../../widgets/motion.dart';
+import '../../widgets/visuals.dart';
 import 'exercise_detail_screen.dart';
 import 'exercise_editor_screen.dart';
 import 'muscle_icon.dart';
@@ -56,117 +57,121 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
         ),
         child: const Icon(Icons.add_rounded),
       ),
-      body: SafeArea(
-        bottom: false,
-        child: CustomScrollView(
-          slivers: [
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-              sliver: SliverToBoxAdapter(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Library', style: t.headlineMedium),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${all.length} exercises',
-                      style: t.bodyMedium!.copyWith(
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    TextField(
-                      controller: _search,
-                      onChanged: (_) => setState(() {}),
-                      decoration: InputDecoration(
-                        hintText: 'Search exercises',
-                        prefixIcon: const Icon(
-                          Icons.search_rounded,
-                          color: AppColors.textTertiary,
-                        ),
-                        suffixIcon: _search.text.isEmpty
-                            ? null
-                            : IconButton(
-                                icon: const Icon(Icons.close_rounded),
-                                onPressed: () =>
-                                    setState(() => _search.clear()),
-                              ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            SliverToBoxAdapter(
-              child: SizedBox(
-                height: 64,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 20,
-                    vertical: 14,
-                  ),
-                  children: [
-                    _FilterChip(
-                      label: 'All',
-                      selected: _muscle == null && !_customOnly,
-                      onTap: () => setState(() {
-                        _muscle = null;
-                        _customOnly = false;
-                      }),
-                    ),
-                    _FilterChip(
-                      label: 'My exercises',
-                      selected: _customOnly,
-                      onTap: () => setState(() => _customOnly = !_customOnly),
-                    ),
-                    for (final m in MuscleGroup.values)
-                      _FilterChip(
-                        label: m.label,
-                        color: m.color,
-                        selected: _muscle == m,
-                        onTap: () =>
-                            setState(() => _muscle = _muscle == m ? null : m),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-            if (items.isEmpty)
-              SliverFillRemaining(
-                hasScrollBody: false,
-                child: EmptyState(
-                  icon: Icons.search_off_rounded,
-                  title: 'Nothing found',
-                  message:
-                      'Try another search, or add it as your own exercise.',
-                  action: OutlinedButton(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => ExerciseEditorScreen(
-                          initialName: _search.text.trim(),
-                        ),
-                      ),
-                    ),
-                    child: const Text('Add custom exercise'),
-                  ),
-                ),
-              )
-            else
+      body: GlowBackdrop(
+        color: Theme.of(context).colorScheme.primary,
+        secondary: MuscleGroup.chest.color,
+        child: SafeArea(
+          bottom: false,
+          child: CustomScrollView(
+            slivers: [
               SliverPadding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 120),
-                sliver: SliverList.separated(
-                  itemCount: items.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 10),
-                  itemBuilder: (context, i) => FadeSlideIn.staggered(
-                    key: ValueKey(items[i].exercise.id),
-                    index: i,
-                    child: _ExerciseTile(item: items[i]),
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                sliver: SliverToBoxAdapter(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Library', style: t.headlineMedium),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${all.length} exercises',
+                        style: t.bodyMedium!.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      TextField(
+                        controller: _search,
+                        onChanged: (_) => setState(() {}),
+                        decoration: InputDecoration(
+                          hintText: 'Search exercises',
+                          prefixIcon: const Icon(
+                            Icons.search_rounded,
+                            color: AppColors.textTertiary,
+                          ),
+                          suffixIcon: _search.text.isEmpty
+                              ? null
+                              : IconButton(
+                                  icon: const Icon(Icons.close_rounded),
+                                  onPressed: () =>
+                                      setState(() => _search.clear()),
+                                ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
-          ],
+              SliverToBoxAdapter(
+                child: SizedBox(
+                  height: 64,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 14,
+                    ),
+                    children: [
+                      _FilterChip(
+                        label: 'All',
+                        selected: _muscle == null && !_customOnly,
+                        onTap: () => setState(() {
+                          _muscle = null;
+                          _customOnly = false;
+                        }),
+                      ),
+                      _FilterChip(
+                        label: 'My exercises',
+                        selected: _customOnly,
+                        onTap: () => setState(() => _customOnly = !_customOnly),
+                      ),
+                      for (final m in MuscleGroup.values)
+                        _FilterChip(
+                          label: m.label,
+                          color: m.color,
+                          selected: _muscle == m,
+                          onTap: () =>
+                              setState(() => _muscle = _muscle == m ? null : m),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              if (items.isEmpty)
+                SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: EmptyState(
+                    icon: Icons.search_off_rounded,
+                    title: 'Nothing found',
+                    message:
+                        'Try another search, or add it as your own exercise.',
+                    action: OutlinedButton(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => ExerciseEditorScreen(
+                            initialName: _search.text.trim(),
+                          ),
+                        ),
+                      ),
+                      child: const Text('Add custom exercise'),
+                    ),
+                  ),
+                )
+              else
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 120),
+                  sliver: SliverList.separated(
+                    itemCount: items.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 10),
+                    itemBuilder: (context, i) => FadeSlideIn.staggered(
+                      key: ValueKey(items[i].exercise.id),
+                      index: i,
+                      child: _ExerciseTile(item: items[i]),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -209,12 +214,30 @@ class _FilterChip extends StatelessWidget {
                   : Colors.transparent,
             ),
           ),
-          child: AnimatedDefaultTextStyle(
-            duration: Motion.medium,
-            style: Theme.of(context).textTheme.labelMedium!.copyWith(
-              color: selected ? AppColors.textPrimary : AppColors.textSecondary,
-            ),
-            child: Text(label),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (color != null) ...[
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: color,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 7),
+              ],
+              AnimatedDefaultTextStyle(
+                duration: Motion.medium,
+                style: Theme.of(context).textTheme.labelMedium!.copyWith(
+                  color: selected
+                      ? AppColors.textPrimary
+                      : AppColors.textSecondary,
+                ),
+                child: Text(label),
+              ),
+            ],
           ),
         ),
       ),
