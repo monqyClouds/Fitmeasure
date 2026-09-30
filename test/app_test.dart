@@ -5,6 +5,7 @@ import 'package:fitmeasure/app/providers.dart';
 import 'package:fitmeasure/data/db/database.dart';
 import 'package:fitmeasure/data/repos/profile_repo.dart';
 import 'package:fitmeasure/features/cycles/cycle_editor_screen.dart';
+import 'package:fitmeasure/features/progress/exercise_progress_screen.dart';
 import 'package:fitmeasure/features/workout/workout_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -155,5 +156,70 @@ void main() {
     expect(find.text('Train it again'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('RECENT WORKOUTS'), 200);
     expect(find.text('RECENT WORKOUTS'), findsOneWidget);
+
+    // The bench press now has a strength chart and records.
+    await tester.tap(find.text('Progress'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Bench Press'),
+      200,
+      scrollable: find
+          .byWidgetPredicate(
+            (w) => w is Scrollable && w.axisDirection == AxisDirection.down,
+          )
+          .first,
+    );
+    // Centre it, clear of the top edge.
+    Scrollable.ensureVisible(
+      tester.element(find.text('Bench Press')),
+      alignment: 0.5,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Bench Press'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ExerciseProgressScreen), findsOneWidget);
+    expect(find.text('ESTIMATED 1-REP MAX'), findsNothing); // bodyweight set
+    expect(find.text('PERSONAL RECORDS'), findsOneWidget);
+  });
+
+  testWidgets('log body weight from Today and see it on Progress', (
+    tester,
+  ) async {
+    final db = AppDatabase(
+      DatabaseConnection(
+        NativeDatabase.memory(),
+        closeStreamsSynchronously: true,
+      ),
+    );
+    addTearDown(db.close);
+    final pid = await ProfileRepo(db).create(name: 'Sam', color: 0xFF5AA9FF);
+    final container = ProviderContainer(
+      overrides: [databaseProvider.overrideWithValue(db)],
+    );
+    addTearDown(container.dispose);
+    await container.read(currentProfileIdProvider.notifier).select(pid);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const FitmeasureApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Body weight'), findsOneWidget);
+    await tester.tap(find.byTooltip('Log body weight'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '82,5');
+    await tester.pump();
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('82.5 kg'), findsOneWidget);
+    expect(find.byTooltip('Log body weight'), findsNothing); // done today
+
+    await tester.tap(find.text('Progress'));
+    await tester.pumpAndSettle();
+    expect(find.text('82.5 kg'), findsOneWidget);
+    expect(find.text('BODY'), findsOneWidget);
   });
 }

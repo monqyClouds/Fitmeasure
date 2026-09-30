@@ -35,12 +35,22 @@ Done (phase 2):
   elapsed time and volume. Add or remove exercises and sets as you go. A
   summary at the end highlights new personal bests.
 - **Progress**: week streak, training calendar heatmap, weekly volume and
-  totals.
+  totals (phase 3 adds body and strength here).
+
+Done (phase 3):
+
+- **Body measurements**: body weight, body fat and tape measurements, plus
+  your own (any name and unit), reorderable. Log them all at once or one at a
+  time; body weight has a one-tap card on Today.
+- **Charts**: every measurement and exercise gets a trend chart with the
+  background shaded by cycle, a 1M/3M/6M/1Y/All range and touch tooltips.
+- **Strength per exercise**: estimated 1-rep max (Epley), heaviest set,
+  volume, reps, time or distance over time, with the workouts behind it.
+- **Personal records**: best 1RM, heaviest set, best volume and more per
+  exercise, and recent records on Progress.
 
 Planned:
 
-- **Phase 3**: body measurements and charts (trends shaded by cycle, strength
-  per exercise, personal records).
 - **Phase 4**: backup export and import, and polish.
 
 ## Getting the app on your phone

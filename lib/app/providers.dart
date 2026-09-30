@@ -3,9 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/db/database.dart';
 import '../data/repos/cycle_repo.dart';
 import '../data/repos/exercise_repo.dart';
+import '../data/repos/measurement_repo.dart';
 import '../data/repos/plan_repo.dart';
 import '../data/repos/profile_repo.dart';
 import '../data/repos/session_repo.dart';
+import '../data/repos/strength_repo.dart';
+import '../domain/strength.dart';
 
 /// Overridden in main() (and in tests) with a concrete database.
 final databaseProvider = Provider<AppDatabase>(
@@ -26,6 +29,12 @@ final planRepoProvider = Provider(
 );
 final sessionRepoProvider = Provider(
   (ref) => SessionRepo(ref.watch(databaseProvider)),
+);
+final measurementRepoProvider = Provider(
+  (ref) => MeasurementRepo(ref.watch(databaseProvider)),
+);
+final strengthRepoProvider = Provider(
+  (ref) => StrengthRepo(ref.watch(databaseProvider)),
 );
 
 // --- Profiles --------------------------------------------------------------
@@ -166,3 +175,35 @@ final allSessionsProvider = StreamProvider<List<SessionSummary>>((ref) {
   if (id == null) return Stream.value(const []);
   return ref.watch(sessionRepoProvider).watchRecent(id, limit: 100000);
 });
+
+// --- Measurements ----------------------------------------------------------
+
+/// Every measurement type of the current profile with its entries.
+final measurementsProvider = StreamProvider<List<MeasurementSeries>>((ref) {
+  final id = ref.watch(currentProfileIdProvider);
+  if (id == null) return Stream.value(const []);
+  return ref.watch(measurementRepoProvider).watchAll(id);
+});
+
+final measurementSeriesProvider = StreamProvider.autoDispose
+    .family<MeasurementSeries?, int>(
+      (ref, typeId) => ref
+          .watch(measurementRepoProvider)
+          .watchSeries(requireProfileId(ref), typeId),
+    );
+
+// --- Strength --------------------------------------------------------------
+
+/// Every exercise the current profile has logged, most recent first.
+final strengthTrendsProvider = StreamProvider<List<ExerciseTrend>>((ref) {
+  final id = ref.watch(currentProfileIdProvider);
+  if (id == null) return Stream.value(const []);
+  return ref.watch(strengthRepoProvider).watchTrends(id);
+});
+
+final exerciseTrendProvider = StreamProvider.autoDispose
+    .family<ExerciseTrend?, int>(
+      (ref, exerciseId) => ref
+          .watch(strengthRepoProvider)
+          .watchTrend(requireProfileId(ref), exerciseId),
+    );

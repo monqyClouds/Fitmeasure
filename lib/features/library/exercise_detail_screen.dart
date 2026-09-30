@@ -11,6 +11,7 @@ import '../../data/db/database.dart';
 import '../../domain/enums.dart';
 import '../../widgets/common.dart';
 import '../../widgets/motion.dart';
+import '../progress/exercise_progress_screen.dart';
 import 'exercise_editor_screen.dart';
 import 'media_viewer_screen.dart';
 import 'muscle_icon.dart';
@@ -124,6 +125,14 @@ class ExerciseDetailScreen extends ConsumerWidget {
                         color: AppColors.textSecondary,
                       ),
                     ),
+                  ),
+                ],
+                if (ref.watch(exerciseTrendProvider(exerciseId)).value
+                    case final trend?) ...[
+                  const SizedBox(height: 24),
+                  FadeSlideIn(
+                    delay: const Duration(milliseconds: 80),
+                    child: StrengthTile(trend: trend),
                   ),
                 ],
                 const SizedBox(height: 28),

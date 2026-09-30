@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../data/db/database.dart';
+import '../../data/repos/measurement_repo.dart';
 import '../../data/repos/plan_repo.dart';
 import '../../data/repos/session_repo.dart';
 import '../../domain/dates.dart';
@@ -12,7 +13,10 @@ import '../../domain/enums.dart';
 import '../../domain/units.dart';
 import '../../widgets/common.dart';
 import '../../widgets/motion.dart';
+import '../../widgets/trend_chart.dart';
 import '../../widgets/visuals.dart';
+import '../body/measurement_detail_screen.dart';
+import '../body/measurement_style.dart';
 import '../cycles/cycle_card.dart';
 import '../cycles/cycle_editor_screen.dart';
 import '../cycles/cycles_screen.dart';
@@ -60,6 +64,11 @@ class TodayScreen extends ConsumerWidget {
               stagger(_Header(profile: profile)),
               const SizedBox(height: 22),
               stagger(_WeekCard(recent: recent, today: today.value)),
+              if (ref.watch(measurementsProvider).value?.firstOrNull
+                  case final weight?) ...[
+                const SizedBox(height: 12),
+                stagger(_BodyWeightCard(series: weight), 'weight'),
+              ],
               if (active != null) ...[
                 const SizedBox(height: 14),
                 stagger(_ResumeCard(session: active)),
@@ -897,6 +906,111 @@ class _StartCycleCard extends StatelessWidget {
               decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
               child: Icon(Icons.arrow_forward_rounded, color: onColor(accent)),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The first measurement (body weight, unless reordered) with a one-tap log.
+class _BodyWeightCard extends ConsumerWidget {
+  const _BodyWeightCard({required this.series});
+  final MeasurementSeries series;
+
+  Future<void> _log(BuildContext context, WidgetRef ref) async {
+    final profileId = ref.read(currentProfileIdProvider);
+    final result = await showValueSheet(
+      context,
+      type: series.type,
+      hint: series.latest?.value,
+    );
+    if (result == null || profileId == null) return;
+    final (value, at) = result;
+    await ref.read(measurementRepoProvider).logMany(profileId, {
+      series.type.id: value,
+    }, at: at);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = Theme.of(context).textTheme;
+    final style = measurementStyle(series.type);
+    final latest = series.latest;
+    final loggedToday =
+        latest != null &&
+        dateOnly(latest.recordedAt) == dateOnly(DateTime.now());
+    final since = dateOnly(DateTime.now()).subtract(const Duration(days: 30));
+    return Pressable(
+      borderRadius: Radii.tile,
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => MeasurementDetailScreen(typeId: series.type.id),
+        ),
+      ),
+      child: Ink(
+        padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(Radii.tile),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: style.color.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(13),
+              ),
+              child: Icon(style.icon, color: style.color, size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    series.type.name,
+                    style: t.bodySmall!.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  Text(
+                    latest == null
+                        ? 'Not logged yet'
+                        : formatMeasurement(latest.value, series.type.unit),
+                    style: t.titleMedium,
+                  ),
+                ],
+              ),
+            ),
+            if (series.entries.length > 1)
+              SizedBox(
+                width: 72,
+                child: TrendChart(
+                  points: [
+                    for (final e in series.entries)
+                      if (!e.recordedAt.isBefore(since))
+                        (e.recordedAt, e.value),
+                  ],
+                  color: style.color,
+                  sparkline: true,
+                  height: 30,
+                ),
+              ),
+            const SizedBox(width: 8),
+            loggedToday
+                ? Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Icon(Icons.check_circle_rounded, color: style.color),
+                  )
+                : IconButton.filledTonal(
+                    tooltip: 'Log ${series.type.name.toLowerCase()}',
+                    onPressed: () => _log(context, ref),
+                    icon: const Icon(Icons.add_rounded),
+                  ),
           ],
         ),
       ),
