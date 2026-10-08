@@ -24,12 +24,18 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":8080", "HTTP listen address")
-	udpPort := flag.Int("udp-port", 0, "single UDP port for all WebRTC media (0 = a random port per connection)")
-	publicIP := flag.String("public-ip", "", "public IP to advertise in ICE candidates, when behind 1:1 NAT")
-	stun := flag.String("stun", "", "comma-separated STUN URLs for the server's peer connections, e.g. stun:stun.l.google.com:19302")
-	tlsCert := flag.String("tls-cert", "", "TLS certificate file; browsers only allow camera access over HTTPS, except on localhost")
-	tlsKey := flag.String("tls-key", "", "TLS key file")
+	// Settings come from flags, then environment variables, then .env in the
+	// working directory, then the defaults below.
+	if err := loadEnvFile(".env"); err != nil {
+		slog.Error("reading .env", "err", err)
+		os.Exit(2)
+	}
+	addr := flag.String("addr", envString("FITMEASURE_ADDR", ":8080"), "HTTP listen address (env FITMEASURE_ADDR)")
+	udpPort := flag.Int("udp-port", envInt("FITMEASURE_UDP_PORT", 0), "single UDP port for all WebRTC media, 0 = a random port per connection (env FITMEASURE_UDP_PORT)")
+	publicIP := flag.String("public-ip", envString("FITMEASURE_PUBLIC_IP", ""), "public IP to advertise in ICE candidates, when behind 1:1 NAT (env FITMEASURE_PUBLIC_IP)")
+	stun := flag.String("stun", envString("FITMEASURE_STUN", ""), "comma-separated STUN URLs for the server's peer connections, e.g. stun:stun.l.google.com:19302 (env FITMEASURE_STUN)")
+	tlsCert := flag.String("tls-cert", envString("FITMEASURE_TLS_CERT", ""), "TLS certificate file; browsers only allow camera access over HTTPS, except on localhost (env FITMEASURE_TLS_CERT)")
+	tlsKey := flag.String("tls-key", envString("FITMEASURE_TLS_KEY", ""), "TLS key file (env FITMEASURE_TLS_KEY)")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))

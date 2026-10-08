@@ -43,15 +43,25 @@ Then open `https://192.168.1.20:8080` on the phone. For the phone to trust the
 certificate, install mkcert's root certificate on it (`mkcert -CAROOT` shows
 where it is).
 
-### Flags
+### Settings
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `-addr` | `:8080` | HTTP listen address |
-| `-udp-port` | `0` | One UDP port for all media. `0` uses a random port per connection, which is fine on a LAN. A server behind a firewall should set one, e.g. `7882`. |
-| `-public-ip` | | Public IP to advertise, for servers behind 1:1 NAT (most cloud VMs) |
-| `-stun` | | Comma-separated STUN URLs for the server's own connections |
-| `-tls-cert`, `-tls-key` | | Serve HTTPS |
+Each setting can be a flag, an environment variable, or a line in `server/.env`
+(git-ignored; copy `.env.example` to start). Flags beat environment variables,
+which beat `.env`.
+
+| Flag | Variable | Default | Meaning |
+|---|---|---|---|
+| `-addr` | `FITMEASURE_ADDR` | `:8080` | HTTP listen address |
+| `-udp-port` | `FITMEASURE_UDP_PORT` | `0` | One UDP port for all media. `0` uses a random port per connection, which is fine on a LAN. A server behind a firewall should set one, e.g. `7882`. |
+| `-public-ip` | `FITMEASURE_PUBLIC_IP` | | Public IP to advertise, for servers behind 1:1 NAT (most cloud VMs) |
+| `-stun` | `FITMEASURE_STUN` | | Comma-separated STUN URLs for the server's own connections |
+| `-tls-cert`, `-tls-key` | `FITMEASURE_TLS_CERT`, `FITMEASURE_TLS_KEY` | | Serve HTTPS |
+
+For example, to use port 8282 locally:
+
+```sh
+echo 'FITMEASURE_ADDR=:8282' > .env
+```
 
 ## Test
 
