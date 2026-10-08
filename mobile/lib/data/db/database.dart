@@ -32,7 +32,7 @@ class AppDatabase extends _$AppDatabase {
     : super(executor ?? driftDatabase(name: 'fitmeasure'));
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -53,6 +53,7 @@ class AppDatabase extends _$AppDatabase {
     onUpgrade: (m, from, to) async {
       if (from < 2) await m.createTable(sessionExercises);
       if (from < 3) await customStatement(relativizeMediaPathsSql);
+      if (from < 4) await m.addColumn(sessions, sessions.started);
     },
     beforeOpen: (details) async {
       await customStatement('PRAGMA foreign_keys = ON');

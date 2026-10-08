@@ -88,12 +88,14 @@ class SessionRepo {
         ..limit(1);
 
   /// Starts a workout. With a [planDayId], the day's exercises and targets
-  /// are copied in.
+  /// are copied in. Unless [startNow], the clock waits for [begin], so the
+  /// workout can be set up first.
   Future<int> start({
     required int profileId,
     required String name,
     int? planDayId,
     int? cycleId,
+    bool startNow = true,
   }) => _db.transaction(() async {
     final id = await _db
         .into(_db.sessions)
@@ -104,6 +106,7 @@ class SessionRepo {
             planDayId: Value(planDayId),
             cycleId: Value(cycleId),
             startedAt: _now(),
+            started: Value(startNow),
           ),
         );
     if (planDayId != null) {
@@ -238,6 +241,15 @@ class SessionRepo {
       (_db.update(_db.sessionExercises)..where((e) => e.id.equals(entryId)))
           .write(SessionExercisesCompanion(targetSets: Value(sets)));
 
+  /// Starts the clock of a workout that was set up first. Does nothing if
+  /// it's already running.
+  Future<void> begin(int sessionId) =>
+      (_db.update(
+        _db.sessions,
+      )..where((s) => s.id.equals(sessionId) & s.started.not())).write(
+        SessionsCompanion(startedAt: Value(_now()), started: const Value(true)),
+      );
+
   /// Records set [setNumber] of an exercise. Rest is the time since the
   /// previous set in the workout finished. Logging a set again corrects its
   /// values but keeps when it was done.
@@ -249,6 +261,8 @@ class SessionRepo {
     int? durationSec,
     double? distanceKm,
   }) => _db.transaction(() async {
+    // Ticking off a set means the workout is under way.
+    await begin(entry.sessionId);
     final values = SetLogsCompanion(
       reps: Value(reps),
       weightKg: Value(weightKg),
@@ -302,10 +316,11 @@ class SessionRepo {
   Future<void> unlogSet(int setLogId) =>
       (_db.delete(_db.setLogs)..where((l) => l.id.equals(setLogId))).go();
 
-  Future<void> finish(int sessionId) =>
-      (_db.update(_db.sessions)..where((s) => s.id.equals(sessionId))).write(
-        SessionsCompanion(endedAt: Value(_now())),
-      );
+  Future<void> finish(int sessionId) => _db.transaction(() async {
+    await begin(sessionId);
+    await (_db.update(_db.sessions)..where((s) => s.id.equals(sessionId)))
+        .write(SessionsCompanion(endedAt: Value(_now())));
+  });
 
   /// Deletes a workout and everything logged in it.
   Future<void> delete(int sessionId) =>

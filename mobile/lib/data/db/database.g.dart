@@ -3249,6 +3249,21 @@ class $SessionsTable extends Sessions with TableInfo<$SessionsTable, Session> {
     type: DriftSqlType.dateTime,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _startedMeta = const VerificationMeta(
+    'started',
+  );
+  @override
+  late final GeneratedColumn<bool> started = GeneratedColumn<bool>(
+    'started',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("started" IN (0, 1))',
+    ),
+    defaultValue: const Constant(true),
+  );
   static const VerificationMeta _endedAtMeta = const VerificationMeta(
     'endedAt',
   );
@@ -3277,6 +3292,7 @@ class $SessionsTable extends Sessions with TableInfo<$SessionsTable, Session> {
     cycleId,
     name,
     startedAt,
+    started,
     endedAt,
     notes,
   ];
@@ -3331,6 +3347,12 @@ class $SessionsTable extends Sessions with TableInfo<$SessionsTable, Session> {
     } else if (isInserting) {
       context.missing(_startedAtMeta);
     }
+    if (data.containsKey('started')) {
+      context.handle(
+        _startedMeta,
+        started.isAcceptableOrUnknown(data['started']!, _startedMeta),
+      );
+    }
     if (data.containsKey('ended_at')) {
       context.handle(
         _endedAtMeta,
@@ -3376,6 +3398,10 @@ class $SessionsTable extends Sessions with TableInfo<$SessionsTable, Session> {
         DriftSqlType.dateTime,
         data['${effectivePrefix}started_at'],
       )!,
+      started: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}started'],
+      )!,
       endedAt: attachedDatabase.typeMapping.read(
         DriftSqlType.dateTime,
         data['${effectivePrefix}ended_at'],
@@ -3400,6 +3426,10 @@ class Session extends DataClass implements Insertable<Session> {
   final int? cycleId;
   final String name;
   final DateTime startedAt;
+
+  /// False while an empty workout is being set up: [startedAt] is when it
+  /// was opened until the person taps Start.
+  final bool started;
   final DateTime? endedAt;
   final String? notes;
   const Session({
@@ -3409,6 +3439,7 @@ class Session extends DataClass implements Insertable<Session> {
     this.cycleId,
     required this.name,
     required this.startedAt,
+    required this.started,
     this.endedAt,
     this.notes,
   });
@@ -3425,6 +3456,7 @@ class Session extends DataClass implements Insertable<Session> {
     }
     map['name'] = Variable<String>(name);
     map['started_at'] = Variable<DateTime>(startedAt);
+    map['started'] = Variable<bool>(started);
     if (!nullToAbsent || endedAt != null) {
       map['ended_at'] = Variable<DateTime>(endedAt);
     }
@@ -3446,6 +3478,7 @@ class Session extends DataClass implements Insertable<Session> {
           : Value(cycleId),
       name: Value(name),
       startedAt: Value(startedAt),
+      started: Value(started),
       endedAt: endedAt == null && nullToAbsent
           ? const Value.absent()
           : Value(endedAt),
@@ -3467,6 +3500,7 @@ class Session extends DataClass implements Insertable<Session> {
       cycleId: serializer.fromJson<int?>(json['cycleId']),
       name: serializer.fromJson<String>(json['name']),
       startedAt: serializer.fromJson<DateTime>(json['startedAt']),
+      started: serializer.fromJson<bool>(json['started']),
       endedAt: serializer.fromJson<DateTime?>(json['endedAt']),
       notes: serializer.fromJson<String?>(json['notes']),
     );
@@ -3481,6 +3515,7 @@ class Session extends DataClass implements Insertable<Session> {
       'cycleId': serializer.toJson<int?>(cycleId),
       'name': serializer.toJson<String>(name),
       'startedAt': serializer.toJson<DateTime>(startedAt),
+      'started': serializer.toJson<bool>(started),
       'endedAt': serializer.toJson<DateTime?>(endedAt),
       'notes': serializer.toJson<String?>(notes),
     };
@@ -3493,6 +3528,7 @@ class Session extends DataClass implements Insertable<Session> {
     Value<int?> cycleId = const Value.absent(),
     String? name,
     DateTime? startedAt,
+    bool? started,
     Value<DateTime?> endedAt = const Value.absent(),
     Value<String?> notes = const Value.absent(),
   }) => Session(
@@ -3502,6 +3538,7 @@ class Session extends DataClass implements Insertable<Session> {
     cycleId: cycleId.present ? cycleId.value : this.cycleId,
     name: name ?? this.name,
     startedAt: startedAt ?? this.startedAt,
+    started: started ?? this.started,
     endedAt: endedAt.present ? endedAt.value : this.endedAt,
     notes: notes.present ? notes.value : this.notes,
   );
@@ -3513,6 +3550,7 @@ class Session extends DataClass implements Insertable<Session> {
       cycleId: data.cycleId.present ? data.cycleId.value : this.cycleId,
       name: data.name.present ? data.name.value : this.name,
       startedAt: data.startedAt.present ? data.startedAt.value : this.startedAt,
+      started: data.started.present ? data.started.value : this.started,
       endedAt: data.endedAt.present ? data.endedAt.value : this.endedAt,
       notes: data.notes.present ? data.notes.value : this.notes,
     );
@@ -3527,6 +3565,7 @@ class Session extends DataClass implements Insertable<Session> {
           ..write('cycleId: $cycleId, ')
           ..write('name: $name, ')
           ..write('startedAt: $startedAt, ')
+          ..write('started: $started, ')
           ..write('endedAt: $endedAt, ')
           ..write('notes: $notes')
           ..write(')'))
@@ -3541,6 +3580,7 @@ class Session extends DataClass implements Insertable<Session> {
     cycleId,
     name,
     startedAt,
+    started,
     endedAt,
     notes,
   );
@@ -3554,6 +3594,7 @@ class Session extends DataClass implements Insertable<Session> {
           other.cycleId == this.cycleId &&
           other.name == this.name &&
           other.startedAt == this.startedAt &&
+          other.started == this.started &&
           other.endedAt == this.endedAt &&
           other.notes == this.notes);
 }
@@ -3565,6 +3606,7 @@ class SessionsCompanion extends UpdateCompanion<Session> {
   final Value<int?> cycleId;
   final Value<String> name;
   final Value<DateTime> startedAt;
+  final Value<bool> started;
   final Value<DateTime?> endedAt;
   final Value<String?> notes;
   const SessionsCompanion({
@@ -3574,6 +3616,7 @@ class SessionsCompanion extends UpdateCompanion<Session> {
     this.cycleId = const Value.absent(),
     this.name = const Value.absent(),
     this.startedAt = const Value.absent(),
+    this.started = const Value.absent(),
     this.endedAt = const Value.absent(),
     this.notes = const Value.absent(),
   });
@@ -3584,6 +3627,7 @@ class SessionsCompanion extends UpdateCompanion<Session> {
     this.cycleId = const Value.absent(),
     required String name,
     required DateTime startedAt,
+    this.started = const Value.absent(),
     this.endedAt = const Value.absent(),
     this.notes = const Value.absent(),
   }) : profileId = Value(profileId),
@@ -3596,6 +3640,7 @@ class SessionsCompanion extends UpdateCompanion<Session> {
     Expression<int>? cycleId,
     Expression<String>? name,
     Expression<DateTime>? startedAt,
+    Expression<bool>? started,
     Expression<DateTime>? endedAt,
     Expression<String>? notes,
   }) {
@@ -3606,6 +3651,7 @@ class SessionsCompanion extends UpdateCompanion<Session> {
       if (cycleId != null) 'cycle_id': cycleId,
       if (name != null) 'name': name,
       if (startedAt != null) 'started_at': startedAt,
+      if (started != null) 'started': started,
       if (endedAt != null) 'ended_at': endedAt,
       if (notes != null) 'notes': notes,
     });
@@ -3618,6 +3664,7 @@ class SessionsCompanion extends UpdateCompanion<Session> {
     Value<int?>? cycleId,
     Value<String>? name,
     Value<DateTime>? startedAt,
+    Value<bool>? started,
     Value<DateTime?>? endedAt,
     Value<String?>? notes,
   }) {
@@ -3628,6 +3675,7 @@ class SessionsCompanion extends UpdateCompanion<Session> {
       cycleId: cycleId ?? this.cycleId,
       name: name ?? this.name,
       startedAt: startedAt ?? this.startedAt,
+      started: started ?? this.started,
       endedAt: endedAt ?? this.endedAt,
       notes: notes ?? this.notes,
     );
@@ -3654,6 +3702,9 @@ class SessionsCompanion extends UpdateCompanion<Session> {
     if (startedAt.present) {
       map['started_at'] = Variable<DateTime>(startedAt.value);
     }
+    if (started.present) {
+      map['started'] = Variable<bool>(started.value);
+    }
     if (endedAt.present) {
       map['ended_at'] = Variable<DateTime>(endedAt.value);
     }
@@ -3672,6 +3723,7 @@ class SessionsCompanion extends UpdateCompanion<Session> {
           ..write('cycleId: $cycleId, ')
           ..write('name: $name, ')
           ..write('startedAt: $startedAt, ')
+          ..write('started: $started, ')
           ..write('endedAt: $endedAt, ')
           ..write('notes: $notes')
           ..write(')'))
@@ -10372,6 +10424,7 @@ typedef $$SessionsTableCreateCompanionBuilder = SessionsCompanion Function({
   Value<int?> cycleId,
   required String name,
   required DateTime startedAt,
+  Value<bool> started,
   Value<DateTime?> endedAt,
   Value<String?> notes,
 });
@@ -10382,6 +10435,7 @@ typedef $$SessionsTableUpdateCompanionBuilder = SessionsCompanion Function({
   Value<int?> cycleId,
   Value<String> name,
   Value<DateTime> startedAt,
+  Value<bool> started,
   Value<DateTime?> endedAt,
   Value<String?> notes,
 });
@@ -10502,6 +10556,11 @@ class $$SessionsTableFilterComposer
 
   ColumnFilters<DateTime> get startedAt => $composableBuilder(
     column: $table.startedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get started => $composableBuilder(
+    column: $table.started,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -10659,6 +10718,11 @@ class $$SessionsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<bool> get started => $composableBuilder(
+    column: $table.started,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<DateTime> get endedAt => $composableBuilder(
     column: $table.endedAt,
     builder: (column) => ColumnOrderings(column),
@@ -10756,6 +10820,9 @@ class $$SessionsTableAnnotationComposer
 
   GeneratedColumn<DateTime> get startedAt =>
       $composableBuilder(column: $table.startedAt, builder: (column) => column);
+
+  GeneratedColumn<bool> get started =>
+      $composableBuilder(column: $table.started, builder: (column) => column);
 
   GeneratedColumn<DateTime> get endedAt =>
       $composableBuilder(column: $table.endedAt, builder: (column) => column);
@@ -10923,6 +10990,7 @@ class $$SessionsTableTableManager
                 Value<int?> cycleId = const Value.absent(),
                 Value<String> name = const Value.absent(),
                 Value<DateTime> startedAt = const Value.absent(),
+                Value<bool> started = const Value.absent(),
                 Value<DateTime?> endedAt = const Value.absent(),
                 Value<String?> notes = const Value.absent(),
               }) => SessionsCompanion(
@@ -10932,6 +11000,7 @@ class $$SessionsTableTableManager
                 cycleId: cycleId,
                 name: name,
                 startedAt: startedAt,
+                started: started,
                 endedAt: endedAt,
                 notes: notes,
               ),
@@ -10943,6 +11012,7 @@ class $$SessionsTableTableManager
                 Value<int?> cycleId = const Value.absent(),
                 required String name,
                 required DateTime startedAt,
+                Value<bool> started = const Value.absent(),
                 Value<DateTime?> endedAt = const Value.absent(),
                 Value<String?> notes = const Value.absent(),
               }) => SessionsCompanion.insert(
@@ -10952,6 +11022,7 @@ class $$SessionsTableTableManager
                 cycleId: cycleId,
                 name: name,
                 startedAt: startedAt,
+                started: started,
                 endedAt: endedAt,
                 notes: notes,
               ),

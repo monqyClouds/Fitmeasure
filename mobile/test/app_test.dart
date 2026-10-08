@@ -80,6 +80,47 @@ void main() {
     expect(find.text('Add a form video or photo'), findsOneWidget);
   });
 
+  testWidgets('an empty workout waits for Start', (tester) async {
+    final db = AppDatabase(
+      DatabaseConnection(
+        NativeDatabase.memory(),
+        closeStreamsSynchronously: true,
+      ),
+    );
+    addTearDown(db.close);
+    final pid = await ProfileRepo(db).create(name: 'Sam', color: 0xFFB8F34A);
+    final container = ProviderContainer(
+      overrides: [databaseProvider.overrideWithValue(db)],
+    );
+    addTearDown(container.dispose);
+    await container.read(currentProfileIdProvider.notifier).select(pid);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const FitmeasureApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(find.text('Start an empty workout'), 200);
+    await tester.ensureVisible(find.text('Start an empty workout'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Start an empty workout'));
+    // The play button pulses, so pump rather than settle.
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 200));
+    }
+    expect(find.byType(WorkoutScreen), findsOneWidget);
+    expect(find.text('READY WHEN YOU ARE'), findsOneWidget);
+    expect(find.text('Finish workout'), findsNothing);
+
+    await tester.tap(find.text('Start workout'));
+    await tester.pumpAndSettle();
+    expect(find.text('READY WHEN YOU ARE'), findsNothing);
+    expect((await db.select(db.sessions).getSingle()).started, isTrue);
+  });
+
   testWidgets('plan from a template, log a set, finish the workout', (
     tester,
   ) async {

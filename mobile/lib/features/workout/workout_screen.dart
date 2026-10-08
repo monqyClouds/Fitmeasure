@@ -120,6 +120,11 @@ class _WorkoutScreenState extends ConsumerState<WorkoutScreen> {
     );
   }
 
+  Future<void> _begin() async {
+    HapticFeedback.mediumImpact();
+    await _repo.begin(widget.sessionId);
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
@@ -165,6 +170,21 @@ class _WorkoutScreenState extends ConsumerState<WorkoutScreen> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 40),
           children: [
+            AnimatedSize(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic,
+              // Let the card's glow spill out.
+              clipBehavior: Clip.none,
+              child: w.session.started
+                  ? const SizedBox(width: double.infinity)
+                  : Padding(
+                      padding: const EdgeInsets.only(bottom: 16),
+                      child: _StartCard(
+                        ready: w.exercises.isNotEmpty,
+                        onStart: _begin,
+                      ),
+                    ),
+            ),
             FadeSlideIn(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(4, 0, 4, 20),
@@ -200,10 +220,12 @@ class _WorkoutScreenState extends ConsumerState<WorkoutScreen> {
                             icon: Icons.timer_outlined,
                             color: CycleType.endurance.color,
                             label: 'Elapsed',
-                            value: ElapsedText(
-                              since: w.session.startedAt,
-                              style: t.titleMedium,
-                            ),
+                            value: w.session.started
+                                ? ElapsedText(
+                                    since: w.session.startedAt,
+                                    style: t.titleMedium,
+                                  )
+                                : Text('0:00', style: t.titleMedium),
                           ),
                           const SizedBox(height: 12),
                           _HeaderStat(
@@ -261,13 +283,149 @@ class _WorkoutScreenState extends ConsumerState<WorkoutScreen> {
                 label: const Text('Add exercise'),
               ),
             ],
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: () => _finish(w),
-              icon: const Icon(Icons.flag_rounded),
-              label: const Text('Finish workout'),
-            ),
+            if (w.session.started) ...[
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => _finish(w),
+                icon: const Icon(Icons.flag_rounded),
+                label: const Text('Finish workout'),
+              ),
+            ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown above a workout that's being set up: the clock waits for Start.
+class _StartCard extends StatelessWidget {
+  const _StartCard({required this.ready, required this.onStart});
+
+  /// Whether exercises have been added yet.
+  final bool ready;
+  final VoidCallback onStart;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final accent = Theme.of(context).colorScheme.primary;
+    final on = onColor(accent);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(24),
+        onTap: onStart,
+        child: Ink(
+          padding: const EdgeInsets.fromLTRB(20, 18, 16, 18),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(24),
+            gradient: LinearGradient(
+              colors: [accent, Color.lerp(accent, Colors.black, 0.25)!],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: accent.withValues(alpha: 0.35),
+                blurRadius: 24,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'READY WHEN YOU ARE',
+                      style: t.labelSmall!.copyWith(
+                        color: on.withValues(alpha: 0.75),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Start workout',
+                      style: t.titleLarge!.copyWith(color: on),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      ready
+                          ? 'The clock starts when you tap'
+                          : 'Add your exercises, then start the clock',
+                      style: t.bodySmall!.copyWith(
+                        color: on.withValues(alpha: 0.8),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              _PulsingPlay(color: accent, background: on),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A play button with a soft ring breathing around it.
+class _PulsingPlay extends StatefulWidget {
+  const _PulsingPlay({required this.color, required this.background});
+  final Color color;
+  final Color background;
+
+  @override
+  State<_PulsingPlay> createState() => _PulsingPlayState();
+}
+
+class _PulsingPlayState extends State<_PulsingPlay>
+    with SingleTickerProviderStateMixin {
+  late final _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1600),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox.square(
+      dimension: 72,
+      child: AnimatedBuilder(
+        animation: _pulse,
+        builder: (context, child) {
+          final v = Curves.easeOut.transform(_pulse.value);
+          return Stack(
+            alignment: Alignment.center,
+            children: [
+              Container(
+                width: 56 + 16 * v,
+                height: 56 + 16 * v,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: widget.background.withValues(alpha: 0.35 * (1 - v)),
+                ),
+              ),
+              child!,
+            ],
+          );
+        },
+        child: Container(
+          width: 56,
+          height: 56,
+          decoration: BoxDecoration(
+            color: widget.background,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(Icons.play_arrow_rounded, color: widget.color, size: 34),
         ),
       ),
     );

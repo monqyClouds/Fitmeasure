@@ -114,6 +114,10 @@ class Sessions extends Table {
   )();
   TextColumn get name => text()();
   DateTimeColumn get startedAt => dateTime()();
+
+  /// False while an empty workout is being set up: [startedAt] is when it
+  /// was opened until the person taps Start.
+  BoolColumn get started => boolean().withDefault(const Constant(true))();
   DateTimeColumn get endedAt => dateTime().nullable()();
   TextColumn get notes => text().nullable()();
 }

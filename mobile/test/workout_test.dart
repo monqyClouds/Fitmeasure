@@ -289,6 +289,45 @@ void main() {
       expect(w.exercises.first.rowCount, CycleType.bulk.sets);
     });
 
+    test('an empty workout waits for Start', () async {
+      final id = await sessions.start(
+        profileId: pid,
+        name: 'Workout',
+        startNow: false,
+      );
+      var s = (await sessions.loadWorkout(id))!.session;
+      expect(s.started, isFalse);
+      expect(await sessions.watchActive(pid).first, isNotNull);
+
+      // Setting up takes a while; the clock starts at Start.
+      now = now.add(const Duration(minutes: 4));
+      await sessions.begin(id);
+      s = (await sessions.loadWorkout(id))!.session;
+      expect(s.started, isTrue);
+      expect(s.startedAt, now);
+
+      // Starting again changes nothing.
+      final started = now;
+      now = now.add(const Duration(minutes: 1));
+      await sessions.begin(id);
+      expect((await sessions.loadWorkout(id))!.session.startedAt, started);
+    });
+
+    test('ticking off a set starts a waiting workout', () async {
+      final id = await sessions.start(
+        profileId: pid,
+        name: 'Workout',
+        startNow: false,
+      );
+      await sessions.addExercises(id, [await exercise('Bench Press')]);
+      now = now.add(const Duration(minutes: 3));
+      final bench = (await sessions.loadWorkout(id))!.exercises.first.entry;
+      await sessions.logSet(entry: bench, setNumber: 1, reps: 8);
+      final s = (await sessions.loadWorkout(id))!.session;
+      expect(s.started, isTrue);
+      expect(s.startedAt, now);
+    });
+
     test('rest over half an hour is not recorded', () async {
       final (_, id) = await planned();
       final bench = (await sessions.loadWorkout(id))!.exercises.first.entry;
@@ -394,6 +433,7 @@ void main() {
     var old = AppDatabase(NativeDatabase(file));
     await ProfileRepo(old).create(name: 'Kept', color: 1);
     await old.customStatement('DROP TABLE session_exercises');
+    await old.customStatement('ALTER TABLE sessions DROP COLUMN started');
     await old.customStatement('PRAGMA user_version = 1');
     await old.close();
 
@@ -404,6 +444,31 @@ void main() {
       (await upgraded.select(upgraded.profiles).get()).single.name,
       'Kept',
     );
+  });
+
+  test('upgrading to version 4 keeps workouts started', () async {
+    driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+    addTearDown(
+      () => driftRuntimeOptions.dontWarnAboutMultipleDatabases = false,
+    );
+    final dir = await Directory.systemTemp.createTemp('fitmeasure_v4');
+    addTearDown(() => dir.delete(recursive: true));
+    final file = File('${dir.path}/db.sqlite');
+
+    var old = AppDatabase(NativeDatabase(file));
+    final p = await ProfileRepo(old).create(name: 'Ada', color: 1);
+    await old.customStatement('ALTER TABLE sessions DROP COLUMN started');
+    await old.customStatement(
+      'INSERT INTO sessions (profile_id, name, started_at) VALUES (?, ?, ?)',
+      [p, 'Old', 1759000000],
+    );
+    await old.customStatement('PRAGMA user_version = 3');
+    await old.close();
+
+    final upgraded = AppDatabase(NativeDatabase(file));
+    addTearDown(upgraded.close);
+    final s = await upgraded.select(upgraded.sessions).getSingle();
+    expect(s.started, isTrue);
   });
 
   test('week streak counts back from this week or last', () {
@@ -450,6 +515,7 @@ void main() {
         [p, bench.id, kind, uri],
       );
     }
+    await old.customStatement('ALTER TABLE sessions DROP COLUMN started');
     await old.customStatement('PRAGMA user_version = 2');
     await old.close();
 

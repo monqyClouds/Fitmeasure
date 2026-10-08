@@ -223,7 +223,7 @@ class _ResumeCard extends ConsumerWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'IN PROGRESS',
+                    session.started ? 'IN PROGRESS' : 'READY TO START',
                     style: t.labelSmall!.copyWith(
                       color: onColor(accent).withValues(alpha: 0.7),
                     ),
@@ -233,12 +233,20 @@ class _ResumeCard extends ConsumerWidget {
                     session.name,
                     style: t.titleLarge!.copyWith(color: onColor(accent)),
                   ),
-                  ElapsedText(
-                    since: session.startedAt,
-                    style: t.bodyMedium!.copyWith(
-                      color: onColor(accent).withValues(alpha: 0.8),
+                  if (session.started)
+                    ElapsedText(
+                      since: session.startedAt,
+                      style: t.bodyMedium!.copyWith(
+                        color: onColor(accent).withValues(alpha: 0.8),
+                      ),
+                    )
+                  else
+                    Text(
+                      'Tap to finish setting up',
+                      style: t.bodyMedium!.copyWith(
+                        color: onColor(accent).withValues(alpha: 0.8),
+                      ),
                     ),
-                  ),
                 ],
               ),
             ),

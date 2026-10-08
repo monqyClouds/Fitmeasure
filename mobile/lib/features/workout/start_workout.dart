@@ -13,7 +13,9 @@ void _open(NavigatorState navigator, int sessionId) => navigator.push(
 );
 
 /// Starts a workout for [day] (or an empty one) and opens it. Only one
-/// workout runs at a time, so an unfinished one is reopened instead.
+/// workout runs at a time, so an unfinished one is reopened instead. An
+/// empty workout's clock waits until the person taps Start, so they can
+/// add exercises first.
 Future<void> startWorkout(
   BuildContext context,
   WidgetRef ref, {
@@ -42,6 +44,7 @@ Future<void> startWorkout(
     name: day?.day.name ?? 'Workout',
     planDayId: day?.day.id,
     cycleId: cycleId,
+    startNow: day != null,
   );
   if (navigator.mounted) _open(navigator, id);
 }
