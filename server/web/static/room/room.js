@@ -18,6 +18,20 @@ let subscribeOffers = 0;
 const names = new Map(); // participant ID → name
 const tiles = new Map(); // participant ID → { figure, video, caption }
 
+// Picture size against upload speed. Left alone, Chrome keeps sending
+// 960×540 even at 250 kbit/s, where it breaks into blocks; a smaller picture
+// at the same bitrate is much sharper. The camera still captures 960×540 and
+// the encoder scales it down. No bitrate cap per level, so the browser can
+// still probe for more bandwidth and the picture can grow again.
+const videoLevels = [
+  { scale: 1, minKbps: 1000, size: '960×540' },
+  { scale: 1.5, minKbps: 450, size: '640×360' },
+  { scale: 2, minKbps: 0, size: '480×270' },
+];
+const startLevel = 1; // 640×360 until the estimate shows there's room for more
+let videoLevel = null; // index into videoLevels once applied
+let levelUpVotes = 0;
+
 function log(text, kind = '') {
   const li = document.createElement('li');
   const time = new Date().toLocaleTimeString([], { hour12: false });
@@ -239,6 +253,8 @@ function leave() {
   clearInterval(statsTimer);
   statsTimer = null;
   lastBytes = null;
+  videoLevel = null;
+  levelUpVotes = 0;
   if (localStream) {
     localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
@@ -294,6 +310,8 @@ async function showStats() {
     if (!path) continue;
     rows[label] = path.text;
     if (label === 'Publish path' && path.rtt !== undefined) rows['Round trip'] = `${Math.round(path.rtt * 1000)} ms`;
+    if (label === 'Publish path' && path.availableKbps) rows['Upload estimate'] = `${path.availableKbps} kbit/s`;
+    if (label === 'Publish path') adaptVideo(path.availableKbps).catch((err) => log(`Adapting video: ${err.message}`, 'bad'));
   }
 
   // Inbound video stats name the track; the track's stream is the sender.
@@ -359,7 +377,53 @@ function describePath(report) {
   return {
     text: `${how} ${local?.address || '(address hidden)'} → ${remote?.candidateType} ${remote?.address ?? ''}:${remote?.port ?? ''} (${local?.protocol})`,
     rtt: pair.currentRoundTripTime,
+    // The sender's bandwidth estimate, from the server's congestion
+    // feedback (TWCC). Chrome reports it; Firefox doesn't.
+    availableKbps: pair.availableOutgoingBitrate ? Math.round(pair.availableOutgoingBitrate / 1000) : null,
   };
+}
+
+// adaptVideo picks the picture size for the upload estimate: down at once
+// when the estimate falls, up one level at a time, and only after the
+// estimate has cleared the next level's bar by 30% for 3 seconds in a row.
+async function adaptVideo(availableKbps) {
+  const sender = pcs?.publish.getSenders().find((s) => s.track?.kind === 'video');
+  if (!sender) return;
+  if (videoLevel === null) {
+    await setVideoLevel(sender, startLevel, availableKbps);
+    return;
+  }
+  if (!availableKbps) return;
+  const fits = videoLevels.findIndex((l) => availableKbps >= l.minKbps);
+  if (fits > videoLevel) {
+    levelUpVotes = 0;
+    await setVideoLevel(sender, fits, availableKbps);
+  } else if (fits < videoLevel && availableKbps >= videoLevels[videoLevel - 1].minKbps * 1.3) {
+    if (++levelUpVotes >= 3) {
+      levelUpVotes = 0;
+      await setVideoLevel(sender, videoLevel - 1, availableKbps);
+    }
+  } else {
+    levelUpVotes = 0;
+  }
+}
+
+async function setVideoLevel(sender, level, availableKbps) {
+  const params = sender.getParameters();
+  if (!params.encodings?.length) return; // not negotiated yet
+  params.encodings[0].scaleResolutionDownBy = videoLevels[level].scale;
+  // When the encoder must cut further, keep the frame rate (movement matters
+  // in a workout) and give up resolution.
+  params.degradationPreference = 'maintain-framerate';
+  try {
+    await sender.setParameters(params);
+  } catch {
+    delete params.degradationPreference; // not supported everywhere
+    await sender.setParameters(params);
+  }
+  const why = availableKbps ? ` for an upload estimate of ${availableKbps} kbit/s` : '';
+  log(`Sending ${videoLevels[level].size}${why}`, videoLevel !== null && level > videoLevel ? 'bad' : '');
+  videoLevel = level;
 }
 
 function setDetail(id, detail) {
