@@ -283,6 +283,9 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rm.announce(demoted)
 		rm.retargetAll()
 	}
+	if w := rm.workoutState(); w != nil {
+		_ = p.send(signal.Message{Type: signal.TypeWorkout, Workout: w})
+	}
 	for _, t := range tracks {
 		p.subscribe(t)
 	}
@@ -399,6 +402,11 @@ func (rs *Rooms) leave(rm *room, p *participant) {
 	if len(rm.participants) == 0 {
 		delete(rs.rooms, rm.name)
 		close(rm.done)
+		go func() {
+			rm.wmu.Lock()
+			rm.stopTimerLocked()
+			rm.wmu.Unlock()
+		}()
 	}
 	var newHost *participant
 	if rm.host == p {
@@ -430,6 +438,9 @@ type room struct {
 	host                *participant
 	locked              bool // no new joins (resumes still work)
 	everyoneCanModerate bool
+
+	wmu     sync.Mutex // guards workout; never held while taking mu
+	workout *workout   // the trainer's timer, if one is loaded
 }
 
 // speakingLevel: audio louder than this (in -dBov: 0 is the loudest, 127
@@ -744,6 +755,10 @@ func (p *participant) resumed(iceServers []webrtc.ICEServer) {
 		resumed.Locked, resumed.EveryoneCanModerate = settings.Locked, settings.EveryoneCanModerate
 	}
 	_ = p.send(resumed)
+	if p.room != nil {
+		// Whatever the workout did meanwhile; or nothing, if it was stopped.
+		_ = p.send(signal.Message{Type: signal.TypeWorkout, Workout: p.room.workoutState()})
+	}
 
 	// Any offer sent while the WebSocket was down was lost.
 	p.mu.Lock()
@@ -1190,6 +1205,14 @@ func (p *participant) signal() error {
 			}
 
 		default:
+			if workoutTypes[msg.Type] {
+				if p.room != nil {
+					if text := p.room.handleWorkout(p, msg); text != "" {
+						sendError(text)
+					}
+				}
+				continue
+			}
 			if !moderationTypes[msg.Type] {
 				sendError("unknown message type " + msg.Type)
 				continue

@@ -335,3 +335,18 @@ IDs are six characters from `abcdefghjkmnpqrstuvwxyz23456789` (no 0/o, 1/l/i),
 about 890 million of them. Until there are accounts, the room's creator is
 recognised by its host key: joining with it makes them host, taking over from
 whoever stood in, and gets them in even when the room is locked.
+
+## The trainer's timer
+
+The host (or a moderator) can run a workout for the whole room. The clock is
+on the server; every change goes to everyone with the time left in the
+current step, so all phones count down the same second.
+
+| Message | |
+|---|---|
+| `workout_load` `{workout: {title, steps}}` | Loads it, paused at the first step. A step is `{kind: work\|rest\|break, title, detail?, seconds, set?, sets?}`; `seconds: 0` (a set of reps) waits for the host. |
+| `workout_control` `{action}` | `start` (or resume), `pause`, `next`, `prev`, `stop`, or `break` with `seconds` (10–900): a water break now, after which the interrupted step carries on with the time it had left. |
+| `workout` `{workout}` | Server to everyone, on every change and to whoever joins or reconnects: steps, `index`, `running`, `remainingMs`, `finished`. No `workout` means it was stopped. |
+
+Timed steps move on by themselves. The app builds the steps from a plan day
+or from exercises picked on the spot (`mobile/lib/features/live/workout_steps.dart`).

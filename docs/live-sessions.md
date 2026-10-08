@@ -77,6 +77,13 @@ link is all anyone needs to join; the server supplies the name. There's no
 waiting room yet. The creator holds the room's host key, which makes them its
 host whenever they join (see `server/README.md`, "Rooms").
 
+**The trainer's timer (built):** the host or a moderator loads a workout,
+from one of their plan days or built on the spot, and runs it for the room:
+timed sets count down, sets of reps wait for the host, rest follows each set,
+and water breaks can be added at any moment. One clock on the server keeps
+every screen on the same second (see `server/README.md`, "The trainer's
+timer").
+
 ### 3.2 Removing
 
 - Anyone with moderation rights can remove a participant, but **never the

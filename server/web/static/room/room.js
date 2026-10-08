@@ -486,6 +486,12 @@ async function handle(msg) {
     case 'estimate':
       downloadEstimate = msg.bitrate;
       break;
+    case 'workout':
+      workout = msg.workout ?? null;
+      workoutAt = performance.now();
+      renderWorkout();
+      break;
+
     case 'error':
       log(`Server error: ${msg.error}`, 'bad');
       if (msg.error === 'no room with that ID') leave();
@@ -617,6 +623,8 @@ function toggle(kind) {
 }
 
 function leave() {
+  workout = null;
+  renderWorkout();
   clearInterval(statsTimer);
   statsTimer = null;
   lastBytes = null;
@@ -779,6 +787,51 @@ function setDetail(id, detail) {
   if (!tile || tile.detail === detail) return;
   tile.detail = detail;
   renderCaption(id);
+}
+
+// The trainer's timer: the room's workout as the server last said, and
+// when it said it, to count down from.
+let workout = null;
+let workoutAt = 0;
+
+function workoutLeft() {
+  if (!workout) return 0;
+  let ms = workout.remainingMs;
+  if (workout.running) ms -= performance.now() - workoutAt;
+  return Math.max(0, ms);
+}
+
+function clock(secs) {
+  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+}
+
+function renderWorkout() {
+  const box = $('workout');
+  box.hidden = !workout;
+  if (!workout) return;
+  const step = workout.steps[workout.index];
+  const next = workout.steps[workout.index + 1];
+  box.dataset.kind = step?.kind ?? 'done';
+  $('workout-kind').textContent = !step ? 'DONE' : !workout.running ? 'PAUSED'
+    : { work: 'WORK', rest: 'REST', break: 'WATER BREAK' }[step.kind];
+  $('workout-time').textContent = !step ? '✓' : step.seconds ? clock(Math.ceil(workoutLeft() / 1000)) : 'GO';
+  $('workout-title').textContent = step ? step.title : `${workout.title}: complete`;
+  $('workout-detail').textContent = step
+    ? [step.set ? `Set ${step.set} of ${step.sets}` : '', step.detail ?? ''].filter(Boolean).join(' · ')
+    : '';
+  $('workout-next').textContent = step ? (next ? `Next: ${next.title}` : 'Last step') : '';
+  $('workout-controls').hidden = !canModerate();
+  $('workout-play').textContent = workout.running ? 'Pause' : 'Start';
+  $('workout-play').dataset.action = workout.running ? 'pause' : 'start';
+}
+// Also keeps the host's controls in step with role changes.
+setInterval(() => { if (workout) renderWorkout(); }, 200);
+for (const b of document.querySelectorAll('#workout-controls button')) {
+  b.onclick = () => {
+    const action = b.dataset.action;
+    if (action === 'stop' && workout?.steps[workout.index] && !confirm('End the workout for everyone?')) return;
+    send({ type: 'workout_control', action, ...(action === 'break' ? { seconds: 60 } : {}) });
+  };
 }
 
 // Rooms are created here (or in the app) and joined by ID, at /r/{id}.

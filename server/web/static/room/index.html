@@ -53,6 +53,23 @@
       <button id="prompt-no" type="button" class="toggle">Not now</button>
     </div>
 
+    <div id="workout" class="workout" hidden>
+      <div class="workout-time" id="workout-time"></div>
+      <div class="workout-what">
+        <span class="workout-kind" id="workout-kind"></span>
+        <strong id="workout-title"></strong>
+        <span id="workout-detail"></span>
+        <small id="workout-next"></small>
+      </div>
+      <div class="workout-controls" id="workout-controls" hidden>
+        <button type="button" class="toggle" data-action="prev">◀</button>
+        <button type="button" id="workout-play" data-action="start">Start</button>
+        <button type="button" class="toggle" data-action="next">▶</button>
+        <button type="button" class="toggle" data-action="break">Water break</button>
+        <button type="button" class="toggle" data-action="stop">End</button>
+      </div>
+    </div>
+
     <div id="tiles" class="videos"></div>
 
     <section>

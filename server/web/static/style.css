@@ -223,3 +223,20 @@ input:not([type]), input[type="text"] {
   text-decoration: none;
 }
 .button-link[hidden], #lobby[hidden], #join[hidden], #share[hidden] { display: none; }
+
+.workout {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
+  margin: 16px 0; padding: 14px 18px; border-radius: 20px;
+  background: var(--surface); border-left: 6px solid var(--accent);
+}
+.workout[hidden] { display: none; }
+.workout[data-kind="rest"] { border-left-color: #5aa9ff; }
+.workout[data-kind="break"] { border-left-color: #3dd6c6; }
+.workout-time { font-size: 44px; font-weight: 800; font-variant-numeric: tabular-nums; min-width: 120px; }
+.workout-what { display: flex; flex-direction: column; flex: 1; min-width: 180px; }
+.workout-what strong { font-size: 20px; }
+.workout-kind { font-size: 12px; letter-spacing: 1.5px; color: var(--accent); font-weight: 800; }
+.workout-what small { color: var(--text-2); }
+.workout-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+.workout-controls[hidden] { display: none; }
+.workout-controls button { padding: 8px 14px; }

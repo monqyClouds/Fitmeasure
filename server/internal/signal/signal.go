@@ -69,6 +69,13 @@ const (
 	TypeUnmuteRequested = "unmute_requested" // ID (by whom), Track: show the prompt
 	TypeRemoved         = "removed"          // you were removed; the connection closes
 	TypeSettings        = "settings"         // the room's Locked and EveryoneCanModerate
+
+	// The trainer's timer. Client to server, host and moderators only.
+	TypeWorkoutLoad    = "workout_load"    // Workout's Title and Steps; starts paused at the first step
+	TypeWorkoutControl = "workout_control" // Action, and Seconds for a break
+	// Server to client, on every change and to whoever joins: Workout, or
+	// none once stopped.
+	TypeWorkout = "workout"
 )
 
 // Roles and visibility.
@@ -122,11 +129,11 @@ type Message struct {
 
 	// Resume, in a welcome or resumed, is a secret token: reconnecting with
 	// ?resume=<token> within the grace period puts you back in the room.
+	Resume string `json:"resume,omitempty"`
+
 	// RoomName, in welcome, is the room's name, for people to see; the ID
 	// is in the URL.
 	RoomName string `json:"roomName,omitempty"`
-
-	Resume string `json:"resume,omitempty"`
 
 	// Track, in moderation messages: "mic" or "camera".
 	Track string `json:"track,omitempty"`
@@ -140,7 +147,55 @@ type Message struct {
 
 	// Speakers, in a speakers message. Missing means nobody.
 	Speakers []string `json:"speakers,omitempty"`
+
+	// Workout, in workout_load (the steps) and workout (where it's at).
+	// A workout message without one means the workout was stopped.
+	Workout *Workout `json:"workout,omitempty"`
+	// Action, in workout_control: WorkoutStart, …; Seconds, for a break.
+	Action  string `json:"action,omitempty"`
+	Seconds int    `json:"seconds,omitempty"`
 }
+
+// Workout is a timed workout the host runs for the whole room: one clock on
+// the server, so everyone sees the same second.
+type Workout struct {
+	Title string        `json:"title"`
+	Steps []WorkoutStep `json:"steps"`
+
+	// Index is the current step; len(Steps) when finished.
+	Index   int  `json:"index"`
+	Running bool `json:"running"`
+	// RemainingMs is the time left in the current step when the message was
+	// sent: clients count down from when it arrives.
+	RemainingMs int64 `json:"remainingMs"`
+	Finished    bool  `json:"finished,omitempty"`
+}
+
+// WorkoutStep is one stretch of a workout: a set, rest, or a break.
+type WorkoutStep struct {
+	Kind   string `json:"kind"` // StepWork, StepRest or StepBreak
+	Title  string `json:"title"`
+	Detail string `json:"detail,omitempty"` // "12 reps · 40 kg"
+	// Seconds is how long it lasts; 0, for a set of reps, waits for the
+	// host to move on.
+	Seconds int `json:"seconds"`
+	Set     int `json:"set,omitempty"` // which set, of Sets
+	Sets    int `json:"sets,omitempty"`
+}
+
+// Workout step kinds and control actions.
+const (
+	StepWork  = "work"
+	StepRest  = "rest"
+	StepBreak = "break" // a water break, added by the host as it goes
+
+	WorkoutStart = "start" // or resume
+	WorkoutPause = "pause"
+	WorkoutNext  = "next"
+	WorkoutPrev  = "prev"
+	WorkoutBreak = "break" // a break of Seconds now; the step it interrupts carries on after
+	WorkoutStop  = "stop"
+)
 
 // Tile is the size of one person's video on screen, in device pixels.
 type Tile struct {

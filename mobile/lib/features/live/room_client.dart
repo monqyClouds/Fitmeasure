@@ -446,6 +446,11 @@ class RoomClient extends ChangeNotifier {
         _applySettings(msg);
         notifyListeners();
 
+      case SignalType.workout:
+        workout = msg.workout;
+        _workoutAt = DateTime.now();
+        notifyListeners();
+
       case SignalType.mutedBy:
         // The server has already stopped forwarding; turn it off here too
         // so our controls match. Only we can turn it back on.
@@ -758,6 +763,38 @@ class RoomClient extends ChangeNotifier {
       _send(SignalMessage(type: SignalType.transferHost, id: id));
   void remove(String id) =>
       _send(SignalMessage(type: SignalType.remove, id: id));
+
+  /// The room's workout, run by the host, if one is loaded.
+  LiveWorkout? workout;
+  DateTime _workoutAt = DateTime.now();
+
+  /// The time left in the workout's current step: counted down from what
+  /// the server said, since it said it.
+  Duration workoutRemaining(DateTime now) {
+    final w = workout;
+    if (w == null) return Duration.zero;
+    var ms = w.remainingMs;
+    if (w.running) ms -= now.difference(_workoutAt).inMilliseconds;
+    return Duration(milliseconds: ms < 0 ? 0 : ms);
+  }
+
+  /// Loads a workout for the room (host and moderators), paused at its
+  /// first step.
+  void loadWorkout(String title, List<WorkoutStep> steps) => _send(
+    SignalMessage(
+      type: SignalType.workoutLoad,
+      workout: LiveWorkout(title: title, steps: steps),
+    ),
+  );
+
+  void controlWorkout(String action, {int? seconds}) => _send(
+    SignalMessage(
+      type: SignalType.workoutControl,
+      action: action,
+      seconds: seconds,
+    ),
+  );
+
   void setLocked(bool on) =>
       _send(SignalMessage(type: SignalType.setSettings, locked: on));
   void setEveryoneCanModerate(bool on) => _send(

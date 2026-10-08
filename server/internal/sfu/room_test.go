@@ -1322,3 +1322,97 @@ func TestRoomCreatorHosts(t *testing.T) {
 		t.Fatalf("got %+v, want the room locked", m)
 	}
 }
+
+func workoutIs(t *testing.T, p *testPeer, ok func(*signal.Workout) bool) *signal.Workout {
+	t.Helper()
+	return waitEvent(t, p, signal.TypeWorkout, func(m signal.Message) bool { return ok(m.Workout) }).Workout
+}
+
+// The host runs a workout for the room: one clock on the server, moving on
+// by itself at the end of each timed step, and waiting at an untimed one.
+func TestWorkoutRunsForEveryone(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	a := joinRoom(t, url, "ada") // host
+	b := joinRoom(t, url, "bo")
+
+	steps := []signal.WorkoutStep{
+		{Kind: signal.StepWork, Title: "Plank", Seconds: 1, Set: 1, Sets: 1},
+		{Kind: signal.StepRest, Title: "Rest", Seconds: 1},
+		{Kind: signal.StepWork, Title: "Push-ups", Detail: "10 reps"},
+	}
+	expectError(t, b, signal.Message{Type: signal.TypeWorkoutLoad, Workout: &signal.Workout{Steps: steps}}, "only the host and moderators")
+	expectError(t, a, signal.Message{Type: signal.TypeWorkoutControl, Action: signal.WorkoutStart}, "no workout")
+	expectError(t, a, signal.Message{Type: signal.TypeWorkoutLoad, Workout: &signal.Workout{Steps: []signal.WorkoutStep{{Kind: "nap"}}}}, "work, rest or break")
+
+	a.send(signal.Message{Type: signal.TypeWorkoutLoad, Workout: &signal.Workout{Title: "Core", Steps: steps}})
+	w := workoutIs(t, b, func(w *signal.Workout) bool { return w != nil && w.Title == "Core" })
+	if w.Index != 0 || w.Running || w.RemainingMs != 1000 || len(w.Steps) != 3 {
+		t.Fatalf("loaded: %+v", w)
+	}
+
+	start := time.Now()
+	a.send(signal.Message{Type: signal.TypeWorkoutControl, Action: signal.WorkoutStart})
+	workoutIs(t, b, func(w *signal.Workout) bool { return w.Running && w.Index == 0 })
+	workoutIs(t, b, func(w *signal.Workout) bool { return w.Index == 1 })
+	w = workoutIs(t, b, func(w *signal.Workout) bool { return w.Index == 2 })
+	if took := time.Since(start); took < 1900*time.Millisecond || took > 3*time.Second {
+		t.Fatalf("two one-second steps took %v", took)
+	}
+	if !w.Running || w.RemainingMs != 0 {
+		t.Fatalf("untimed step: %+v", w)
+	}
+
+	// Someone joining now catches up.
+	c := joinRoom(t, url, "cy")
+	workoutIs(t, c, func(w *signal.Workout) bool { return w != nil && w.Index == 2 })
+
+	a.send(signal.Message{Type: signal.TypeWorkoutControl, Action: signal.WorkoutNext})
+	workoutIs(t, b, func(w *signal.Workout) bool { return w.Finished && !w.Running })
+
+	a.send(signal.Message{Type: signal.TypeWorkoutControl, Action: signal.WorkoutStop})
+	workoutIs(t, b, func(w *signal.Workout) bool { return w == nil })
+}
+
+// A water break interrupts a step, which then carries on with the time it
+// had left; pausing holds the clock.
+func TestWorkoutBreakAndPause(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	a := joinRoom(t, url, "ada")
+
+	a.send(signal.Message{Type: signal.TypeWorkoutLoad, Workout: &signal.Workout{Steps: []signal.WorkoutStep{
+		{Kind: signal.StepWork, Title: "Wall sit", Seconds: 30},
+	}}})
+	workoutIs(t, a, func(w *signal.Workout) bool { return w != nil })
+	a.send(signal.Message{Type: signal.TypeWorkoutControl, Action: signal.WorkoutStart})
+	workoutIs(t, a, func(w *signal.Workout) bool { return w.Running })
+	time.Sleep(500 * time.Millisecond)
+
+	expectError(t, a, signal.Message{Type: signal.TypeWorkoutControl, Action: signal.WorkoutBreak, Seconds: 5}, "10 seconds to 15 minutes")
+	a.send(signal.Message{Type: signal.TypeWorkoutControl, Action: signal.WorkoutBreak, Seconds: 60})
+	w := workoutIs(t, a, func(w *signal.Workout) bool { return len(w.Steps) == 2 })
+	if w.Index != 0 || w.Steps[0].Kind != signal.StepBreak || w.Steps[0].Title != "Water break" || !w.Running {
+		t.Fatalf("break: %+v", w)
+	}
+
+	a.send(signal.Message{Type: signal.TypeWorkoutControl, Action: signal.WorkoutNext})
+	w = workoutIs(t, a, func(w *signal.Workout) bool { return w.Index == 1 })
+	if w.RemainingMs > 29600 || w.RemainingMs < 28000 {
+		t.Fatalf("the wall sit should carry on with about 29.5 s left, has %d ms", w.RemainingMs)
+	}
+
+	a.send(signal.Message{Type: signal.TypeWorkoutControl, Action: signal.WorkoutPause})
+	paused := workoutIs(t, a, func(w *signal.Workout) bool { return !w.Running })
+	time.Sleep(300 * time.Millisecond)
+	a.send(signal.Message{Type: signal.TypeWorkoutControl, Action: signal.WorkoutStart})
+	resumed := workoutIs(t, a, func(w *signal.Workout) bool { return w.Running })
+	if d := paused.RemainingMs - resumed.RemainingMs; d < 0 || d > 100 {
+		t.Fatalf("the clock moved %d ms while paused", d)
+	}
+
+	// Back to the break, from the start.
+	a.send(signal.Message{Type: signal.TypeWorkoutControl, Action: signal.WorkoutPrev})
+	w = workoutIs(t, a, func(w *signal.Workout) bool { return w.Index == 0 })
+	if w.RemainingMs < 59000 {
+		t.Fatalf("prev: %+v", w)
+	}
+}

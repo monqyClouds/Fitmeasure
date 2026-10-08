@@ -13,6 +13,8 @@ import 'prejoin_screen.dart';
 import 'room_client.dart';
 import 'share_room.dart';
 import 'tile_order.dart';
+import 'workout_loader.dart';
+import 'workout_panel.dart';
 
 /// In a room: everyone else in a grid, yourself in a small floating tile,
 /// and the controls.
@@ -190,7 +192,11 @@ class _SessionScreenState extends State<SessionScreen> {
         .firstOrNull;
     return PopScope(
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop) _client.leave();
+        if (!didPop) return;
+        // Already popped: the room ending mustn't pop again (that would
+        // take the home screen with it).
+        _closing = true;
+        _client.leave();
       },
       child: Scaffold(
         backgroundColor: Colors.black,
@@ -201,6 +207,7 @@ class _SessionScreenState extends State<SessionScreen> {
                 client: _client,
                 onInfo: () => _showLinkSheet(context, _client),
               ),
+              WorkoutPanel(client: _client),
               Expanded(
                 child: LayoutBuilder(
                   builder: (context, box) => Stack(
@@ -883,6 +890,16 @@ class _ControlBar extends StatelessWidget {
             offIcon: Icons.cameraswitch_rounded,
             onChanged: client.cameraOn ? (_) => client.flipCamera() : null,
           ),
+          if (client.canModerate)
+            Tooltip(
+              message: 'Run a workout',
+              child: RoundToggle(
+                on: true,
+                onIcon: Icons.timer_rounded,
+                offIcon: Icons.timer_rounded,
+                onChanged: (_) => showWorkoutLoader(context, client),
+              ),
+            ),
           Badge(
             isLabelVisible: client.participants.isNotEmpty,
             label: Text('${client.participants.length + 1}'),

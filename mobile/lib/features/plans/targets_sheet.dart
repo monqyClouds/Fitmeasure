@@ -8,7 +8,7 @@ import '../../domain/targets.dart';
 import '../../domain/units.dart';
 import '../library/muscle_icon.dart';
 
-const restChoices = [0, 30, 45, 60, 90, 120, 180, 240];
+const restChoices = [0, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240];
 
 String restLabel(int sec) => sec == 0
     ? 'None'

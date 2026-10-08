@@ -18,6 +18,7 @@ import '../library/muscle_icon.dart';
 import '../library/video_links.dart';
 import '../plans/targets_sheet.dart';
 import 'rest_timer.dart';
+import 'set_timer_screen.dart';
 import 'session_detail_screen.dart';
 
 /// A workout in progress: tick off each set against its target.
@@ -484,6 +485,12 @@ class _ExerciseCard extends ConsumerWidget {
   final WorkoutExercise we;
   final int sessionId;
 
+  /// The sets not yet ticked off.
+  List<int> get _pending => [
+    for (var n = 1; n <= we.rowCount; n++)
+      if (we.logged(n) == null) n,
+  ];
+
   Future<void> _menu(BuildContext context, WidgetRef ref, String a) async {
     final repo = ref.read(sessionRepoProvider);
     switch (a) {
@@ -655,16 +662,34 @@ class _ExerciseCard extends ConsumerWidget {
               number: n,
               lastTime: last.where((s) => s.setNumber == n).firstOrNull,
             ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              onPressed: () => ref
-                  .read(sessionRepoProvider)
-                  .setTargetSets(we.entry.id, rows + 1),
-              icon: const Icon(Icons.add_rounded, size: 18),
-              label: const Text('Add set'),
-              style: TextButton.styleFrom(foregroundColor: color),
-            ),
+          Row(
+            children: [
+              TextButton.icon(
+                onPressed: () => ref
+                    .read(sessionRepoProvider)
+                    .setTargetSets(we.entry.id, rows + 1),
+                icon: const Icon(Icons.add_rounded, size: 18),
+                label: const Text('Add set'),
+                style: TextButton.styleFrom(foregroundColor: color),
+              ),
+              const Spacer(),
+              if (e.tracking == TrackingType.time &&
+                  (we.entry.targetDurationSec ?? 0) > 0 &&
+                  _pending.isNotEmpty)
+                FilledButton.tonalIcon(
+                  onPressed: () => runTimedSets(
+                    context,
+                    we: we,
+                    sets: _pending,
+                    workSec: we.entry.targetDurationSec!,
+                    restSec: we.entry.restSec ?? 0,
+                  ),
+                  icon: const Icon(Icons.timer_rounded, size: 18),
+                  label: Text(
+                    _pending.length == 1 ? 'Start timer' : 'Run intervals',
+                  ),
+                ),
+            ],
           ),
         ],
       ),
@@ -825,6 +850,21 @@ class _SetRowState extends ConsumerState<_SetRow> {
     super.dispose();
   }
 
+  /// Runs a countdown for this set, of the time entered (or the target).
+  void _time() {
+    final secs = parseDuration(_a.text) ?? widget.we.entry.targetDurationSec;
+    if (secs == null || secs <= 0) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(content: Text('Enter a time like 0:45 first')),
+        );
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    runTimedSets(context, we: widget.we, sets: [widget.number], workSec: secs);
+  }
+
   Future<void> _toggle() async {
     if (_busy) return;
     final repo = ref.read(sessionRepoProvider);
@@ -957,6 +997,26 @@ class _SetRowState extends ConsumerState<_SetRow> {
           ),
           for (final f in fields) ...[
             Expanded(child: f),
+            const SizedBox(width: 6),
+          ],
+          if (_tracking == TrackingType.time && !done) ...[
+            SizedBox(
+              width: 40,
+              height: 40,
+              child: IconButton(
+                tooltip: 'Time this set',
+                padding: EdgeInsets.zero,
+                style: IconButton.styleFrom(
+                  backgroundColor: color.withValues(alpha: 0.16),
+                  foregroundColor: color,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                onPressed: _time,
+                icon: const Icon(Icons.play_arrow_rounded),
+              ),
+            ),
             const SizedBox(width: 6),
           ],
           SizedBox(

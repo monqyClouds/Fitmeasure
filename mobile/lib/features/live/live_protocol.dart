@@ -54,6 +54,129 @@ abstract final class SignalType {
   static const unmuteRequested = 'unmute_requested';
   static const removed = 'removed';
   static const settings = 'settings';
+
+  /// The trainer's timer. Client to server (host and moderators):
+  /// workoutLoad with the steps, workoutControl with an action. Server to
+  /// client: workout, where it's at, or no workout once stopped.
+  static const workoutLoad = 'workout_load';
+  static const workoutControl = 'workout_control';
+  static const workout = 'workout';
+}
+
+/// What can be done to the room's workout.
+abstract final class WorkoutAction {
+  static const start = 'start'; // or resume
+  static const pause = 'pause';
+  static const next = 'next';
+  static const prev = 'prev';
+  static const breakNow = 'break'; // with seconds
+  static const stop = 'stop';
+}
+
+abstract final class StepKind {
+  static const work = 'work';
+  static const rest = 'rest';
+  static const breakTime = 'break';
+}
+
+/// One stretch of a room's workout: a set, rest, or a break.
+class WorkoutStep {
+  const WorkoutStep({
+    required this.kind,
+    required this.title,
+    this.detail,
+    this.seconds = 0,
+    this.set,
+    this.sets,
+  });
+
+  factory WorkoutStep.fromJson(Map<String, dynamic> j) => WorkoutStep(
+    kind: j['kind'] as String,
+    title: j['title'] as String? ?? '',
+    detail: j['detail'] as String?,
+    seconds: j['seconds'] as int? ?? 0,
+    set: j['set'] as int?,
+    sets: j['sets'] as int?,
+  );
+
+  final String kind;
+  final String title;
+
+  /// "12 reps · 40 kg".
+  final String? detail;
+
+  /// 0 for a set of reps: it lasts until the host moves on.
+  final int seconds;
+  final int? set;
+  final int? sets;
+
+  bool get timed => seconds > 0;
+
+  Map<String, dynamic> toJson() => {
+    'kind': kind,
+    'title': title,
+    'detail': ?detail,
+    'seconds': seconds,
+    'set': ?set,
+    'sets': ?sets,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is WorkoutStep &&
+      other.kind == kind &&
+      other.title == title &&
+      other.detail == detail &&
+      other.seconds == seconds &&
+      other.set == set &&
+      other.sets == sets;
+
+  @override
+  int get hashCode => Object.hash(kind, title, detail, seconds, set, sets);
+
+  @override
+  String toString() => '$kind "$title" ${seconds}s ${set ?? ''}/${sets ?? ''}';
+}
+
+/// The room's workout, as the server last told us.
+class LiveWorkout {
+  const LiveWorkout({
+    required this.title,
+    required this.steps,
+    this.index = 0,
+    this.running = false,
+    this.remainingMs = 0,
+    this.finished = false,
+  });
+
+  factory LiveWorkout.fromJson(Map<String, dynamic> j) => LiveWorkout(
+    title: j['title'] as String? ?? '',
+    steps: [
+      for (final s in (j['steps'] as List?) ?? const [])
+        WorkoutStep.fromJson(s as Map<String, dynamic>),
+    ],
+    index: j['index'] as int? ?? 0,
+    running: j['running'] as bool? ?? false,
+    remainingMs: j['remainingMs'] as int? ?? 0,
+    finished: j['finished'] as bool? ?? false,
+  );
+
+  final String title;
+  final List<WorkoutStep> steps;
+  final int index;
+  final bool running;
+
+  /// The time left in the current step when the server sent this.
+  final int remainingMs;
+  final bool finished;
+
+  WorkoutStep? get step => index < steps.length ? steps[index] : null;
+  WorkoutStep? get next => index + 1 < steps.length ? steps[index + 1] : null;
+
+  Map<String, dynamic> toJson() => {
+    'title': title,
+    'steps': [for (final s in steps) s.toJson()],
+  };
 }
 
 abstract final class Role {
@@ -161,6 +284,9 @@ class SignalMessage {
     this.visibility,
     this.locked,
     this.everyoneCanModerate,
+    this.workout,
+    this.action,
+    this.seconds,
   });
 
   factory SignalMessage.decode(String text) {
@@ -176,6 +302,10 @@ class SignalMessage {
       error: json['error'] as String?,
       resume: json['resume'] as String?,
       roomName: json['roomName'] as String?,
+      workout: switch (json['workout']) {
+        final Map<String, dynamic> w => LiveWorkout.fromJson(w),
+        _ => null,
+      },
       track: json['track'] as String?,
       role: json['role'] as String?,
       locked: json['locked'] as bool?,
@@ -243,6 +373,13 @@ class SignalMessage {
   final bool? locked;
   final bool? everyoneCanModerate;
 
+  /// In workout_load, the steps; in workout, where it's at (none: stopped).
+  final LiveWorkout? workout;
+
+  /// In workout_control: a WorkoutAction, and seconds for a break.
+  final String? action;
+  final int? seconds;
+
   String encode() => jsonEncode({
     'type': type,
     'pc': ?pc,
@@ -257,5 +394,8 @@ class SignalMessage {
     'visibility': ?visibility,
     'locked': ?locked,
     'everyoneCanModerate': ?everyoneCanModerate,
+    if (workout != null) 'workout': workout!.toJson(),
+    'action': ?action,
+    'seconds': ?seconds,
   });
 }
