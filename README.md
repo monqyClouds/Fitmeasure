@@ -134,25 +134,35 @@ Notes:
 
 ## Development
 
+The repository holds two projects:
+
+```
+mobile/   Flutter app (Android, iPhone, and later the web client)
+server/   Go backend for live sessions, with a WebRTC SFU built on Pion
+docs/     design docs (live sessions: docs/live-sessions.md)
+```
+
+### App
+
 ```sh
+cd mobile
 flutter pub get
 flutter run                            # with a phone connected or an emulator
 flutter test
 dart run build_runner build            # after changing database tables
 ```
 
-### App icon
-
-The launcher icons are drawn by `tool/make_icons.py` (needs Pillow):
+The launcher icons are drawn by `mobile/tool/make_icons.py` (needs Pillow):
 
 ```sh
+cd mobile
 python3 tool/make_icons.py
 ```
 
-### Layout
+App code layout:
 
 ```
-lib/
+mobile/lib/
   app/        app root, theme and motion tokens, Riverpod providers
   data/       drift database (tables, generated code), seed data, repositories,
               backup
@@ -162,4 +172,8 @@ lib/
 ```
 
 The font is Plus Jakarta Sans, under the SIL Open Font License
-(`assets/fonts/OFL.txt`).
+(`mobile/assets/fonts/OFL.txt`).
+
+### Server
+
+See [`server/README.md`](server/README.md).

@@ -9,6 +9,9 @@ on:
 jobs:
   android:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
     steps:
       - uses: actions/checkout@v4
 
@@ -49,11 +52,14 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: fitmeasure-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: mobile/build/app/outputs/flutter-apk/app-release.apk
 
   ios:
     # Unsigned, for sideloading with a free Apple ID (see the README).
     runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: mobile
     steps:
       - uses: actions/checkout@v4
 
@@ -76,4 +82,21 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: fitmeasure-ios-unsigned
-          path: build/ipa/fitmeasure-unsigned.ipa
+          path: mobile/build/ipa/fitmeasure-unsigned.ipa
+
+  server:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build ./...
