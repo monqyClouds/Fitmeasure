@@ -10,7 +10,7 @@ scratch on [Pion](https://github.com/pion/webrtc), in the stages described in
 | S2. Small room: up to 4 people, everyone sees everyone | ✅ |
 | S3. Real networks: TURN, deployment, the Android app | built; the 30-minute phone-on-4G test is still to do |
 | S4. Simulcast | ✅ (see the notes below on switching down) |
-| S5. Bandwidth estimation | |
+| S5. Bandwidth estimation | built; needs testing on real devices (see below) |
 | S6. Session features | |
 
 ## Run it
@@ -70,6 +70,7 @@ which beat `.env`.
 | `-turn-port` | `FITMEASURE_TURN_PORT` | `0` | Run TURN over UDP and TCP on this port, usually `3478`. `0` is off. |
 | `-turn-domain` | `FITMEASURE_TURN_DOMAIN` | | Also serve TURN over TLS on port 443 for this hostname. Needs `-domain`. |
 | `-turn-relay-ports` | `FITMEASURE_TURN_RELAY_PORTS` | `50000-50199` | UDP ports TURN relays from |
+| `-bwe` | `FITMEASURE_BWE` | `on` | Fit each viewer's layers to an estimate of their bandwidth (stage 5). `off` chooses by tile size only. |
 
 For example, to use port 8282 locally:
 
@@ -258,4 +259,29 @@ web/static/              plain JavaScript test pages for the stages
   separately on each connection, so a publisher's ID can mean something
   else on a viewer's connection. Simulcast packets carry MID and RID
   extensions that would otherwise confuse the viewer.
+- **Bandwidth estimation** (stage 5, `rtc.Factory.EstimatingAPI`, the
+  allocation and probing in `room.go`). Each viewer's subscribe connection
+  runs Google Congestion Control: the server stamps every packet with a
+  transport-wide sequence number, the viewer reports when each arrived
+  (TWCC feedback), and growing delay or loss lowers the estimate. Twice a
+  second the server shares a viewer's estimate between the cameras they
+  watch: smallest layers first, then upgrades by tile size. The room page
+  and the app show the estimate ("Download").
+- **Probing.** GCC only trusts what it has seen: its estimate stays around
+  what is actually sent, so a viewer on small layers would never earn an
+  upgrade. When a tile wants more than the estimate allows, the server sends
+  the next layer for up to 15 seconds; if the estimate rises to cover it,
+  it stays, and if the estimate falls instead, it goes back and the next try
+  waits longer (10 s, doubling to a minute). Caps only drop when the estimate
+  falls below 85% of the current layer's cost, which is how GCC signals
+  congestion, so they don't flip on every wobble.
+- **Testing it.** Tests force budgets per viewer (`TestRoomBandwidthCapsLayers`)
+  and check that the real estimator's feedback loop runs
+  (`TestRoomSendsEstimate`). A live comparison on one PC (an Android
+  emulator and headless Chrome as viewers) was inconclusive: the emulator's
+  speed limit doesn't affect its network, and receivers starved of CPU
+  report packets late, which GCC reads as congestion. Real devices are the
+  test: a phone on weak 4G and a laptop on good Wi-Fi watching the same
+  person. The server log's `room: cap` and `room: probing` lines show what
+  each viewer gets and why.
 

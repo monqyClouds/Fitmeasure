@@ -1,7 +1,8 @@
 # Live sessions: design
 
 Status: in progress. Stages S1 (echo), S2 (small room), S3 (TURN,
-deployment, the Android app's Live tab) and S4 (simulcast) are built; see
+deployment, the Android app's Live tab) and S4 (simulcast) are built, and S5
+(bandwidth estimation) is built but not yet proven on real devices; see
 `server/README.md`.
 
 Fitmeasure today is local-only: profiles, plans, workouts and measurements

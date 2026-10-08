@@ -1,6 +1,6 @@
-// Package rtc builds the Pion WebRTC API shared by every peer connection the
-// server creates: which codecs we accept, which RTP/RTCP helpers run, and how
-// ICE finds network paths.
+// Package rtc builds the Pion WebRTC APIs the server's peer connections use:
+// which codecs we accept, which RTP/RTCP helpers run, and how ICE finds
+// network paths.
 package rtc
 
 import (
@@ -9,6 +9,8 @@ import (
 
 	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
+	"github.com/pion/interceptor/pkg/cc"
+	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/interceptor/pkg/report"
 	"github.com/pion/webrtc/v4"
 )
@@ -37,21 +39,14 @@ type Config struct {
 	IncludeLoopback bool
 }
 
-// NewAPI returns a WebRTC API that only negotiates VP8 video and Opus audio,
-// with NACK (retransmission requests), RTCP receiver reports and
-// transport-wide congestion control feedback. Sender reports are forwarded
-// from publishers rather than generated; see newInterceptors.
-func NewAPI(cfg Config) (*webrtc.API, error) {
-	media := &webrtc.MediaEngine{}
-	if err := registerCodecs(media); err != nil {
-		return nil, err
-	}
+// Factory builds Pion APIs that share one set of network settings, so the
+// UDP and TCP ports are opened once however many APIs there are.
+type Factory struct {
+	settings webrtc.SettingEngine
+}
 
-	interceptors, err := newInterceptors(media)
-	if err != nil {
-		return nil, err
-	}
-
+// NewFactory opens the ports in cfg.
+func NewFactory(cfg Config) (*Factory, error) {
 	settings := webrtc.SettingEngine{}
 	settings.SetIncludeLoopbackCandidate(cfg.IncludeLoopback)
 	if cfg.UDPPort != 0 {
@@ -84,11 +79,87 @@ func NewAPI(cfg Config) (*webrtc.API, error) {
 			return nil, fmt.Errorf("set public IP: %w", err)
 		}
 	}
+	return &Factory{settings: settings}, nil
+}
 
+// NewAPI returns a WebRTC API that only negotiates VP8 video and Opus audio,
+// with NACK (retransmission requests), RTCP receiver reports and
+// transport-wide congestion control feedback. Sender reports are forwarded
+// from publishers rather than generated; see newInterceptors.
+func NewAPI(cfg Config) (*webrtc.API, error) {
+	f, err := NewFactory(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return f.API()
+}
+
+// API returns an API for any number of peer connections.
+func (f *Factory) API() (*webrtc.API, error) {
+	return f.build(nil)
+}
+
+// EstimatingAPI returns an API for one peer connection that also estimates
+// how fast it can send to the other side, with Google Congestion Control
+// (GCC), the algorithm Chrome uses for its own sending.
+//
+// Every outgoing packet gets a transport-wide sequence number (a header
+// extension); the receiver reports when each one arrived (TWCC feedback);
+// growing delays and losses mean the path is full. The estimator arrives on
+// the channel once the peer connection has been created.
+func (f *Factory) EstimatingAPI() (*webrtc.API, <-chan cc.BandwidthEstimator, error) {
+	estimators := make(chan cc.BandwidthEstimator, 1)
+	api, err := f.build(func(media *webrtc.MediaEngine, r *interceptor.Registry) error {
+		controller, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
+			return gcc.NewSendSideBWE(
+				gcc.SendSideBWEInitialBitrate(InitialEstimate),
+				gcc.SendSideBWEMinBitrate(100_000),
+				gcc.SendSideBWEMaxBitrate(8_000_000),
+				// Packets go out as they arrive from publishers. Pacing
+				// them would only add delay; the SFU controls its rate by
+				// choosing layers instead.
+				gcc.SendSideBWEPacer(gcc.NewNoOpPacer()),
+			)
+		})
+		if err != nil {
+			return err
+		}
+		controller.OnNewPeerConnection(func(_ string, e cc.BandwidthEstimator) {
+			select {
+			case estimators <- e:
+			default:
+			}
+		})
+		r.Add(controller)
+		// Added after the controller so it runs first on the way out, and
+		// the controller sees the sequence numbers it stamps.
+		return webrtc.ConfigureTWCCHeaderExtensionSender(media, r)
+	})
+	return api, estimators, err
+}
+
+// InitialEstimate is where a viewer's bandwidth estimate starts, in bit/s,
+// before any feedback has arrived.
+const InitialEstimate = 1_000_000
+
+func (f *Factory) build(extra func(*webrtc.MediaEngine, *interceptor.Registry) error) (*webrtc.API, error) {
+	media := &webrtc.MediaEngine{}
+	if err := registerCodecs(media); err != nil {
+		return nil, err
+	}
+	interceptors, err := newInterceptors(media)
+	if err != nil {
+		return nil, err
+	}
+	if extra != nil {
+		if err := extra(media, interceptors); err != nil {
+			return nil, fmt.Errorf("register bandwidth estimation: %w", err)
+		}
+	}
 	return webrtc.NewAPI(
 		webrtc.WithMediaEngine(media),
 		webrtc.WithInterceptorRegistry(interceptors),
-		webrtc.WithSettingEngine(settings),
+		webrtc.WithSettingEngine(f.settings),
 	), nil
 }
 

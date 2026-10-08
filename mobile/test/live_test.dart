@@ -67,6 +67,12 @@ void main() {
     });
   });
 
+  test('decodes an estimate', () {
+    final m = SignalMessage.decode('{"type": "estimate", "bitrate": 850000}');
+    expect(m.type, SignalType.estimate);
+    expect(m.bitrate, 850000);
+  });
+
   test('encodes a layout', () {
     expect(
       const SignalMessage(

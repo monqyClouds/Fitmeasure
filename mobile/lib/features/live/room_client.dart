@@ -85,6 +85,7 @@ class LinkInfo {
     this.roundTripMs,
     this.uploadKbps,
     this.sending,
+    this.downloadKbps,
   });
 
   /// e.g. "Direct (udp)" or "Relayed through TURN (tcp)".
@@ -98,6 +99,10 @@ class LinkInfo {
   /// What each simulcast layer is sending, e.g. "q 240×135 · h 480×270 ·
   /// f off".
   final String? sending;
+
+  /// The server's estimate of how fast it can send to us, from our
+  /// congestion feedback. It picks each camera's layer to fit.
+  final int? downloadKbps;
 }
 
 /// One person's connection to a room: the signalling WebSocket and two peer
@@ -129,6 +134,7 @@ class RoomClient extends ChangeNotifier {
   bool get cameraOn => localStream.getVideoTracks().any((t) => t.enabled);
   bool frontCamera = true;
   LinkInfo link = const LinkInfo();
+  int? _downloadKbps;
 
   WebSocketChannel? _ws;
   StreamSubscription<dynamic>? _wsSub;
@@ -236,6 +242,9 @@ class RoomClient extends ChangeNotifier {
         _tiles.remove(msg.participant!.id);
         notifyListeners();
         await p?._dispose();
+
+      case SignalType.estimate:
+        if (msg.bitrate case final b?) _downloadKbps = (b / 1000).round();
 
       case SignalType.error:
         // Before the welcome an error means we weren't let in (e.g. the
@@ -413,6 +422,7 @@ class RoomClient extends ChangeNotifier {
       roundTripMs: rtt,
       uploadKbps: upload,
       sending: sending,
+      downloadKbps: _downloadKbps,
     );
     notifyListeners();
   }

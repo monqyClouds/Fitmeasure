@@ -28,6 +28,10 @@ const simulcastLayers = [
   { rid: 'f', maxBitrate: 1_200_000 },
 ];
 
+// The server's estimate of how fast it can send to us, from our congestion
+// feedback (stage 5). It picks each camera's layer to fit this.
+let downloadEstimate = null;
+
 // Tile sizes last sent to the server, to send only changes.
 let lastLayout = '';
 let layoutTimer = null;
@@ -288,6 +292,9 @@ async function handle(msg) {
       removeTile(msg.participant.id);
       names.delete(msg.participant.id);
       break;
+    case 'estimate':
+      downloadEstimate = msg.bitrate;
+      break;
     case 'error':
       log(`Server error: ${msg.error}`, 'bad');
       break;
@@ -299,6 +306,7 @@ function leave() {
   statsTimer = null;
   lastBytes = null;
   lastLayout = '';
+  downloadEstimate = null;
   clearTimeout(layoutTimer);
   if (localStream) {
     localStream.getTracks().forEach((t) => t.stop());
@@ -398,6 +406,7 @@ async function showStats() {
   rows['In the room'] = `${names.size} ${names.size === 1 ? 'person' : 'people'}`;
   rows['Receiving'] = `${receiving} video ${receiving === 1 ? 'stream' : 'streams'}`;
   rows['Receiving repairs'] = `${losses.lost} packets lost, ${losses.nacks} NACKs, ${losses.plis} keyframe requests`;
+  if (downloadEstimate) rows['Download estimate'] = `${Math.round(downloadEstimate / 1000)} kbit/s (the server's, from our feedback)`;
   if (lastBytes) {
     rows['Upload'] = `${Math.round(((sentBytes - lastBytes.sent) * 8) / 1000)} kbit/s`;
     rows['Download'] = `${Math.round(((receivedBytes - lastBytes.received) * 8) / 1000)} kbit/s`;

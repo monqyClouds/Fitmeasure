@@ -21,6 +21,9 @@ abstract final class SignalType {
   /// Client to server: how big each person's tile is on screen, so the
   /// server can send each camera's simulcast layer that fits.
   static const layout = 'layout';
+
+  /// Server to client: how fast the server estimates it can send to us.
+  static const estimate = 'estimate';
 }
 
 abstract final class PeerName {
@@ -86,6 +89,7 @@ class SignalMessage {
     this.participants = const [],
     this.iceServers = const [],
     this.tiles,
+    this.bitrate,
   });
 
   factory SignalMessage.decode(String text) {
@@ -99,6 +103,7 @@ class SignalMessage {
         _ => null,
       },
       error: json['error'] as String?,
+      bitrate: json['bitrate'] as int?,
       id: json['id'] as String?,
       participant: switch (json['participant']) {
         final Map<String, dynamic> p => LiveParticipant.fromJson(p),
@@ -128,6 +133,9 @@ class SignalMessage {
 
   /// In a layout: everyone on screen. Anyone missing gets no video.
   final List<TileSize>? tiles;
+
+  /// In an estimate, in bit/s.
+  final int? bitrate;
 
   String encode() => jsonEncode({
     'type': type,

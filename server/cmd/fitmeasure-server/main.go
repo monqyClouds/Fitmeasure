@@ -46,6 +46,7 @@ type config struct {
 	relayPorts string
 	certDir    string
 	acmeEmail  string
+	bwe        bool
 }
 
 func main() {
@@ -69,6 +70,7 @@ func main() {
 	flag.StringVar(&c.relayPorts, "turn-relay-ports", envString("FITMEASURE_TURN_RELAY_PORTS", "50000-50199"), "UDP port range TURN relays from (env FITMEASURE_TURN_RELAY_PORTS)")
 	flag.StringVar(&c.certDir, "cert-dir", envString("FITMEASURE_CERT_DIR", "certs"), "where Let's Encrypt certificates are kept, with -domain (env FITMEASURE_CERT_DIR)")
 	flag.StringVar(&c.acmeEmail, "acme-email", envString("FITMEASURE_ACME_EMAIL", ""), "email Let's Encrypt may contact about certificates (env FITMEASURE_ACME_EMAIL)")
+	flag.BoolVar(&c.bwe, "bwe", envString("FITMEASURE_BWE", "on") != "off", "fit each viewer's layers to an estimate of their bandwidth; FITMEASURE_BWE=off chooses by tile size only (env FITMEASURE_BWE)")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -90,7 +92,11 @@ func run(log *slog.Logger, c config) error {
 	if c.stun != "" {
 		rtcCfg.ICEServers = []webrtc.ICEServer{{URLs: strings.Split(c.stun, ",")}}
 	}
-	api, err := rtc.NewAPI(rtcCfg)
+	factory, err := rtc.NewFactory(rtcCfg)
+	if err != nil {
+		return err
+	}
+	api, err := factory.API()
 	if err != nil {
 		return err
 	}
@@ -159,6 +165,9 @@ func run(log *slog.Logger, c config) error {
 	}
 
 	rooms := &sfu.Rooms{API: api, ICEServers: rtcCfg.ICEServers, Log: log}
+	if c.bwe {
+		rooms.SubscriberAPI = factory.EstimatingAPI
+	}
 	if turn != nil {
 		rooms.ClientICEServers = turn.ICEServers
 	}

@@ -43,7 +43,7 @@ func TestVP8Keyframe(t *testing.T) {
 }
 
 func TestChooseLayer(t *testing.T) {
-	three := []layerInfo{{"f", 960, 540}, {"q", 240, 135}, {"h", 480, 270}}
+	three := []layerInfo{{"f", 960, 540, 0}, {"q", 240, 135, 0}, {"h", 480, 270, 0}}
 	cases := []struct {
 		name     string
 		layers   []layerInfo
@@ -59,8 +59,8 @@ func TestChooseLayer(t *testing.T) {
 		{"cover: a tall tile needs the height", three, 300, 700, true, "f"},
 		{"no layout yet gets the middle", three, 0, 0, false, "h"},
 		{"top layer dropped", three[1:], 1080, 600, true, "h"},
-		{"sizes unknown yet: largest", []layerInfo{{"q", 0, 0}, {"f", 0, 0}}, 1080, 600, true, "f"},
-		{"no simulcast", []layerInfo{{"", 640, 480}}, 200, 100, true, ""},
+		{"sizes unknown yet: largest", []layerInfo{{"q", 0, 0, 0}, {"f", 0, 0, 0}}, 1080, 600, true, "f"},
+		{"no simulcast", []layerInfo{{"", 640, 480, 0}}, 200, 100, true, ""},
 	}
 	for _, c := range cases {
 		got, ok := chooseLayer(c.layers, c.w, c.h, c.haveTile)
@@ -70,6 +70,54 @@ func TestChooseLayer(t *testing.T) {
 	}
 	if _, ok := chooseLayer(nil, 100, 100, true); ok {
 		t.Error("chose a layer with none arriving")
+	}
+}
+
+func TestAllocate(t *testing.T) {
+	layers := []layerInfo{
+		{rid: "q", bitrate: 100_000},
+		{rid: "h", bitrate: 400_000},
+		{rid: "f", bitrate: 1_000_000},
+	}
+	big := allocRequest{area: 1000 * 600, layers: layers, want: 2}
+	small := allocRequest{area: 300 * 200, layers: layers, want: 1}
+	off := allocRequest{area: 0, layers: layers, want: -1}
+
+	cases := []struct {
+		name   string
+		budget int
+		reqs   []allocRequest
+		want   []int
+	}{
+		{"plenty: everyone gets what their tile wants", 10_000_000, []allocRequest{big, small}, []int{2, 1}},
+		{"too little for anything: smallest layers anyway", 50_000, []allocRequest{big, small}, []int{0, 0}},
+		// 200k for both q layers leaves 400k: h for the big tile (+300k)
+		// fits, then the small tile's h (+300k) doesn't.
+		{"the bigger tile goes first", 600_000, []allocRequest{small, big}, []int{0, 1}},
+		// 200k + 300k + 300k = 800k gives both h; f (+600k) needs 1.4M.
+		{"one step each before anyone gets two", 900_000, []allocRequest{big, small}, []int{1, 1}},
+		{"off screen gets nothing and costs nothing", 500_000, []allocRequest{off, big}, []int{-1, 1}},
+		{"never above what the tile wants", 10_000_000, []allocRequest{small}, []int{1}},
+	}
+	for _, c := range cases {
+		got := allocate(c.budget, c.reqs)
+		for i := range c.want {
+			if got[i] != c.want[i] {
+				t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+				break
+			}
+		}
+	}
+}
+
+func TestCapIndex(t *testing.T) {
+	three := sortLayers([]layerInfo{{rid: "q"}, {rid: "h"}, {rid: "f"}})
+	if i := capIndex(three, "h"); i != 1 {
+		t.Errorf("cap h: got %d", i)
+	}
+	twoNoH := sortLayers([]layerInfo{{rid: "q"}, {rid: "f"}})
+	if i := capIndex(twoNoH, "h"); i != 0 {
+		t.Errorf("cap h with h missing: got %d, want q", i)
 	}
 }
 

@@ -561,11 +561,8 @@ void _showLinkSheet(BuildContext context, RoomClient client) {
       builder: (context, _) {
         final link = client.link;
         final t = Theme.of(context).textTheme;
-        final upload = link.uploadKbps;
-        // How the upload estimate compares with what full quality needs.
-        final fill = upload == null
-            ? 0.0
-            : (upload / fullQualityKbps).clamp(0.0, 1.0);
+        // Full quality from everyone here: their full layer and audio.
+        final downloadNeed = client.participants.length * 1240;
         return Padding(
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),
           child: Column(
@@ -574,32 +571,23 @@ void _showLinkSheet(BuildContext context, RoomClient client) {
             children: [
               Text('Connection', style: t.titleLarge),
               const SizedBox(height: 16),
-              Text(
-                'Upload',
-                style: t.labelMedium!.copyWith(color: AppColors.textTertiary),
+              _Meter(
+                label: 'Upload',
+                kbps: link.uploadKbps,
+                needKbps: fullQualityKbps,
+                note: 'your estimate of what you can send',
               ),
-              const SizedBox(height: 6),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: LinearProgressIndicator(
-                  value: fill,
-                  minHeight: 10,
-                  color: fill >= 1
-                      ? const Color(0xFF3DD6C6)
-                      : fill >= 0.45
-                      ? const Color(0xFFFFB547)
-                      : AppColors.danger,
-                  backgroundColor: AppColors.surfaceHigh,
+              if (downloadNeed > 0) ...[
+                const SizedBox(height: 14),
+                _Meter(
+                  label: 'Download',
+                  kbps: link.downloadKbps,
+                  needKbps: downloadNeed,
+                  note:
+                      "the server's estimate; it picks each person's "
+                      'quality to fit',
                 ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                upload == null
-                    ? 'Measuring…'
-                    : '$upload kbit/s · full quality needs '
-                          '$fullQualityKbps',
-                style: t.bodySmall!.copyWith(color: AppColors.textSecondary),
-              ),
+              ],
               const SizedBox(height: 16),
               _InfoRow('Sending', link.sending ?? '—'),
               _InfoRow('Path', link.path ?? '—'),
@@ -613,6 +601,57 @@ void _showLinkSheet(BuildContext context, RoomClient client) {
       },
     ),
   );
+}
+
+/// A bandwidth estimate as a bar against what full quality needs.
+class _Meter extends StatelessWidget {
+  const _Meter({
+    required this.label,
+    required this.kbps,
+    required this.needKbps,
+    required this.note,
+  });
+
+  final String label;
+  final int? kbps;
+  final int needKbps;
+  final String note;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final fill = kbps == null ? 0.0 : (kbps! / needKbps).clamp(0.0, 1.0);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: t.labelMedium!.copyWith(color: AppColors.textTertiary),
+        ),
+        const SizedBox(height: 6),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: LinearProgressIndicator(
+            value: fill,
+            minHeight: 10,
+            color: fill >= 1
+                ? const Color(0xFF3DD6C6)
+                : fill >= 0.45
+                ? const Color(0xFFFFB547)
+                : AppColors.danger,
+            backgroundColor: AppColors.surfaceHigh,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          kbps == null
+              ? 'Measuring…'
+              : '$kbps kbit/s · full quality needs $needKbps · $note',
+          style: t.bodySmall!.copyWith(color: AppColors.textSecondary),
+        ),
+      ],
+    );
+  }
 }
 
 class _InfoRow extends StatelessWidget {

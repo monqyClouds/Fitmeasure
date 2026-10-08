@@ -30,6 +30,10 @@ const (
 	// Client to server: how big each person's tile is on screen, so the
 	// SFU can pick a simulcast layer for each.
 	TypeLayout = "layout"
+
+	// Server to client, every few seconds: how fast the server estimates it
+	// can send to this client (stage 5), in Bitrate.
+	TypeEstimate = "estimate"
 )
 
 // Peer connection names. In a room each participant has two: one to publish
@@ -60,6 +64,9 @@ type Message struct {
 	// Tiles, in a layout, lists every person on screen. Anyone missing is
 	// off screen and gets no video.
 	Tiles []Tile `json:"tiles,omitempty"`
+
+	// Bitrate, in an estimate, is in bit/s.
+	Bitrate int `json:"bitrate,omitempty"`
 }
 
 // Tile is the size of one person's video on screen, in device pixels.

@@ -291,6 +291,10 @@ func marker(id string) []byte { return []byte("fitmeasure-room-marker-" + id) }
 // layerSizes are the picture sizes the test publisher's layers declare.
 var layerSizes = map[string][2]int{"q": {240, 136}, "h": {480, 270}, "f": {960, 540}}
 
+// layerFiller pads each layer's frames so the layers' bitrates differ
+// like real ones: at 50 frames a second, about 40, 160 and 440 kbit/s.
+var layerFiller = map[string]int{"q": 100, "h": 400, "f": 1100}
+
 // publishLayersUntil sends each simulcast layer as VP8 frames whose payload
 // names the layer ("layer-q" …), with a keyframe declaring the layer's size
 // every tenth frame. It builds the RTP packets itself, because a receiver
@@ -336,7 +340,8 @@ func (p *testPeer) publishLayersUntil(stop <-chan struct{}) {
 		for rid, layer := range p.layers {
 			// An interframe is one packet; a keyframe is three, like a
 			// real one split to fit the MTU, the last with the marker bit.
-			payloads := [][]byte{append([]byte{0x10, 0x01, 0x00, 0x00}, "layer-"+rid...)}
+			filler := make([]byte, layerFiller[rid])
+			payloads := [][]byte{append(append([]byte{0x10, 0x01, 0x00, 0x00}, "layer-"+rid...), filler...)}
 			if n%10 == 0 {
 				size := layerSizes[rid]
 				payloads = [][]byte{
@@ -564,10 +569,11 @@ func (p *testPeer) layersSince(from string, i int) (map[string]int, int) {
 	return seen, len(p.videoLog)
 }
 
-// waitForLayer waits until b gets only the given layer of a's camera.
+// waitForLayer waits until b gets only the given layer of a's camera. The
+// wait allows for the bandwidth cap's hold after a drop (10 s).
 func waitForLayer(t *testing.T, b *testPeer, from, rid string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	_, mark := b.layersSince(from, 0)
 	for time.Now().Before(deadline) {
 		time.Sleep(300 * time.Millisecond)
@@ -646,6 +652,78 @@ func TestRoomSimulcastLayers(t *testing.T) {
 		}
 		if int32(r.ts-prev.ts) < 0 {
 			t.Fatalf("timestamp goes back from %d to %d at sequence number %d", prev.ts, r.ts, r.seq)
+		}
+	}
+}
+
+// Each viewer's layers fit their own bandwidth: one on a slow connection
+// gets the small layer, while another watching the same camera, with room
+// to spare, still gets the full one.
+func TestRoomBandwidthCapsLayers(t *testing.T) {
+	// Less than even the smallest layer, so the outcome doesn't depend on
+	// the layers' measured bitrates (which vary with how fast the test runs).
+	var boBudget atomic.Int64
+	boBudget.Store(10_000)
+	url := serveRooms(t, &Rooms{testBudget: func(name string) func() int {
+		if name == "bo" {
+			return func() int { return int(boBudget.Load()) }
+		}
+		return func() int { return 10_000_000 }
+	}}) + "gym"
+	stop := make(chan struct{})
+	defer close(stop)
+
+	a := joinRoomSimulcast(t, url, "ada")
+	go a.publishLayersUntil(stop)
+	b := joinRoom(t, url, "bo")
+	c := joinRoom(t, url, "cy")
+	big := signal.Tile{ID: a.id, Width: 1080, Height: 608}
+	for _, p := range []*testPeer{b, c} {
+		p.send(signal.Message{Type: signal.TypeLayout, Tiles: []signal.Tile{big}})
+	}
+
+	waitForLayer(t, c, a.id, "f")
+	waitForLayer(t, b, a.id, "q")
+
+	// More bandwidth for b lifts its cap, after the hold, to the full
+	// layer its tile wants.
+	boBudget.Store(10_000_000)
+	waitForLayer(t, b, a.id, "f")
+}
+
+// With a real estimator (GCC fed by the viewer's TWCC feedback), the
+// viewer is told the server's estimate of its bandwidth, and the estimate
+// moves off its starting value once feedback arrives.
+func TestRoomSendsEstimate(t *testing.T) {
+	factory, err := rtc.NewFactory(rtc.Config{IncludeLoopback: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := serveRooms(t, &Rooms{SubscriberAPI: factory.EstimatingAPI}) + "gym"
+	stop := make(chan struct{})
+	defer close(stop)
+
+	a := joinRoomSimulcast(t, url, "ada")
+	go a.publishLayersUntil(stop)
+	b := joinRoom(t, url, "bo")
+
+	deadline := time.After(20 * time.Second)
+	var estimates []int
+	for {
+		select {
+		case m := <-b.events:
+			if m.Type != signal.TypeEstimate {
+				continue
+			}
+			if m.Bitrate <= 0 {
+				t.Fatalf("estimate of %d bit/s", m.Bitrate)
+			}
+			estimates = append(estimates, m.Bitrate)
+			if m.Bitrate != rtc.InitialEstimate {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("the estimate never moved from its starting value: %v", estimates)
 		}
 	}
 }

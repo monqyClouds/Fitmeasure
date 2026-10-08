@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/monqyClouds/Fitmeasure/server/internal/signal"
@@ -65,6 +66,17 @@ type Rooms struct {
 	// participant's client should use, with credentials minted for them.
 	ClientICEServers func(participantID string) ([]webrtc.ICEServer, error)
 
+	// SubscriberAPI, when set, builds the API for each participant's
+	// subscribe connection, with an estimator of how fast the server can
+	// send to them (rtc.Factory.EstimatingAPI). Layers are then chosen to
+	// fit that estimate as well as the tile sizes. Without it, API is used
+	// and only tile sizes count.
+	SubscriberAPI func() (*webrtc.API, <-chan cc.BandwidthEstimator, error)
+
+	// testBudget, in tests, replaces the estimate for a participant (by
+	// name), in bit/s.
+	testBudget func(name string) func() int
+
 	mu    sync.Mutex // guards rooms and every room's membership; taken before room.mu
 	rooms map[string]*room
 }
@@ -92,7 +104,15 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	id := newID()
 	log := rs.Log.With("room", roomName, "participant", id, "name", name, "remote", r.RemoteAddr)
-	p, err := newParticipant(rs.API, rs.ICEServers, id, name, conn, log)
+	subAPI := rs.API
+	var estimators <-chan cc.BandwidthEstimator
+	if rs.SubscriberAPI != nil {
+		if subAPI, estimators, err = rs.SubscriberAPI(); err != nil {
+			log.Error("room: subscriber API", "err", err)
+			return
+		}
+	}
+	p, err := newParticipant(rs.API, subAPI, rs.ICEServers, id, name, conn, log)
 	if err != nil {
 		log.Error("room: create peer connections", "err", err)
 		_ = conn.Send(signal.Message{Type: signal.TypeError, Error: "server error"})
@@ -107,6 +127,19 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rs.leave(rm, p)
 	log.Info("room: joined", "others", len(others))
+
+	// Bandwidth: share the estimate between the cameras p watches.
+	switch {
+	case rs.testBudget != nil:
+		go p.allocateLoop(rs.testBudget(name))
+	case estimators != nil:
+		select {
+		case e := <-estimators:
+			go p.allocateLoop(e.GetTargetBitrate)
+		default:
+			log.Warn("room: no bandwidth estimator")
+		}
+	}
 
 	// OnTrack fires once per simulcast layer; the layers of one camera share
 	// a receiver, and become one upTrack.
@@ -285,18 +318,19 @@ type participant struct {
 	published     map[*webrtc.RTPReceiver]*upTrack // what pub is receiving from them
 	liveLayers    map[*upTrack]int                 // layers still arriving, per published track
 	tiles         map[string]signal.Tile           // their layout, by participant ID
+	probe         prober                           // bandwidth probing, used by allocateLoop only
 	haveLayout    bool                             // whether they've sent one
 	offerInFlight bool                             // a subscribe offer awaits its answer
 	offerAgain    bool                             // tracks changed meanwhile; offer again after the answer
 }
 
-func newParticipant(api *webrtc.API, iceServers []webrtc.ICEServer, id, name string, conn *signal.Conn, log *slog.Logger) (*participant, error) {
+func newParticipant(pubAPI, subAPI *webrtc.API, iceServers []webrtc.ICEServer, id, name string, conn *signal.Conn, log *slog.Logger) (*participant, error) {
 	cfg := webrtc.Configuration{ICEServers: iceServers}
-	pub, err := api.NewPeerConnection(cfg)
+	pub, err := pubAPI.NewPeerConnection(cfg)
 	if err != nil {
 		return nil, err
 	}
-	sub, err := api.NewPeerConnection(cfg)
+	sub, err := subAPI.NewPeerConnection(cfg)
 	if err != nil {
 		pub.Close()
 		return nil, err
@@ -425,6 +459,162 @@ func (p *participant) tileSize(owner string) (width, height int, haveTile bool) 
 	}
 	tile := p.tiles[owner]
 	return tile.Width, tile.Height, true
+}
+
+// audioBitrate is set aside for each audio track in a viewer's budget.
+const audioBitrate = 40_000
+
+// allocateLoop shares p's bandwidth between the cameras p watches, twice a
+// second, and tells p the estimate every few seconds, until p leaves.
+func (p *participant) allocateLoop(budget func() int) {
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	var told time.Time
+	for now := range tick.C {
+		p.mu.Lock()
+		closed := p.closed
+		var video []*downTrack
+		audio := 0
+		for _, d := range p.downs {
+			if d.up.kind == webrtc.RTPCodecTypeVideo {
+				video = append(video, d)
+			} else {
+				audio++
+			}
+		}
+		p.mu.Unlock()
+		if closed {
+			return
+		}
+
+		bitrate := budget()
+		p.allocate(bitrate-audio*audioBitrate, video, now)
+		if now.Sub(told) >= 2*time.Second {
+			told = now
+			_ = p.conn.Send(signal.Message{Type: signal.TypeEstimate, Bitrate: bitrate})
+		}
+	}
+}
+
+// allocate caps each camera p watches to what the budget allows, and
+// probes for more when a tile wants more than the budget allows.
+func (p *participant) allocate(budget int, downs []*downTrack, now time.Time) {
+	reqs := make([]allocRequest, len(downs))
+	for i, d := range downs {
+		layers := sortLayers(d.up.liveLayers())
+		width, height, haveTile := p.tileSize(d.up.owner.id)
+		want := -1
+		if len(layers) > 0 && (!haveTile || (width > 0 && height > 0)) {
+			want = chooseIndex(layers, width, height, haveTile)
+		}
+		if !haveTile {
+			width, height = 1, 1
+		}
+		reqs[i] = allocRequest{area: width * height, layers: layers, want: want}
+	}
+	full := allocate(budget, reqs)
+	keep := allocate(budget*118/100, reqs)
+	safe := allocate(budget*85/100, reqs)
+	severe := allocate(budget*150/100, reqs)
+
+	probing := p.probe.step(downs, reqs, full, budget, now, p.log)
+	for i, d := range downs {
+		if d == probing {
+			continue // the probe holds its cap for now
+		}
+		d.applyCap(reqs[i].layers, keep[i], safe[i], severe[i], budget, now)
+	}
+}
+
+// prober finds out whether a viewer can take more than the estimate says.
+//
+// GCC only trusts what it has seen: its estimate stays near 1.5 times what
+// is actually sent. A viewer receiving only small layers would never earn
+// the estimate to move up, however fast their connection. So when a tile
+// wants a better layer than the estimate allows, the prober sends it. While
+// the path copes, GCC raises its estimate by up to about 8% a second; once
+// the estimate covers the new layer, the layer stays. If instead the
+// estimate falls (delay or loss: the path is full), or doesn't get there
+// within probeLength, the layer goes back and the next try waits twice as
+// long.
+type prober struct {
+	target      *downTrack
+	level       int // the layer index being tried
+	startBudget int // the estimate when the probe began
+	until       time.Time
+	next        time.Time
+	backoff     time.Duration
+}
+
+const (
+	probeLength     = 15 * time.Second
+	probeMinBackoff = 10 * time.Second
+	probeMaxBackoff = time.Minute
+)
+
+// step advances probing by one allocation round and returns the downTrack
+// being probed, if any, whose cap the caller must leave alone.
+func (pr *prober) step(downs []*downTrack, reqs []allocRequest, full []int, budget int, now time.Time, log interface {
+	Info(string, ...any)
+}) *downTrack {
+	if pr.backoff == 0 {
+		pr.backoff = probeMinBackoff
+	}
+	index := func(d *downTrack) int {
+		for i := range downs {
+			if downs[i] == d {
+				return i
+			}
+		}
+		return -1
+	}
+
+	if pr.target != nil {
+		i := index(pr.target)
+		switch {
+		case i < 0:
+			pr.target = nil // unsubscribed meanwhile
+		case full[i] >= pr.level:
+			// The estimate now affords the probed layer: keep it.
+			log.Info("room: probe succeeded", "from", pr.target.up.owner.name, "rid", reqs[i].layers[min(pr.level, len(reqs[i].layers)-1)].rid)
+			pr.target, pr.backoff, pr.next = nil, probeMinBackoff, now.Add(probeMinBackoff)
+		case now.After(pr.until) || budget < pr.startBudget*8/10:
+			// The estimate fell, or never got there: the path can't take
+			// it. Back off.
+			log.Info("room: probe failed", "from", pr.target.up.owner.name, "budget", budget, "start", pr.startBudget)
+			pr.target = nil
+			pr.backoff = min(2*pr.backoff, probeMaxBackoff)
+			pr.next = now.Add(pr.backoff)
+		default:
+			return pr.target
+		}
+		return nil
+	}
+
+	if now.Before(pr.next) {
+		return nil
+	}
+	// The biggest tile held below what it wants.
+	best := -1
+	for i, r := range reqs {
+		if r.want < 0 || full[i] >= r.want || full[i]+1 >= len(r.layers) {
+			continue
+		}
+		if downs[i].capLevel(r.layers) > full[i] {
+			continue // already above the allocation (not yet lowered)
+		}
+		if best < 0 || r.area > reqs[best].area {
+			best = i
+		}
+	}
+	if best < 0 {
+		return nil
+	}
+	d, level := downs[best], full[best]+1
+	pr.target, pr.level, pr.startBudget, pr.until = d, level, budget, now.Add(probeLength)
+	log.Info("room: probing", "from", d.up.owner.name, "rid", reqs[best].layers[level].rid, "budget", budget)
+	d.forceCap(reqs[best].layers[level].rid, now)
+	return d
 }
 
 // setLayout records p's tile sizes and re-chooses every layer p receives.

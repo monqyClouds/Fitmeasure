@@ -76,6 +76,24 @@ func vp8Keyframe(payload []byte) (ok bool, width, height int) {
 type layerInfo struct {
 	rid           string
 	width, height int // from its last keyframe; 0 until one has been seen
+	bitrate       int // measured, in bit/s; 0 until measured
+}
+
+// cost is what a layer takes to send, in bit/s: as measured, or a typical
+// figure until it has been.
+func (l layerInfo) cost() int {
+	if l.bitrate > 0 {
+		return l.bitrate
+	}
+	switch l.rid {
+	case "q":
+		return 150_000
+	case "h":
+		return 500_000
+	case "f":
+		return 1_200_000
+	}
+	return 800_000
 }
 
 // ridRank orders layers whose size isn't known yet.
@@ -95,15 +113,9 @@ func ridRank(rid string) int {
 // next larger layer is worth its bandwidth.
 const maxUpscale = 1.33
 
-// chooseLayer picks the layer for a tile of the given size in device pixels
-// from the layers currently arriving: the smallest whose picture covers the
-// tile with at most maxUpscale enlargement, or the largest if none does.
-// The picture fills the tile ("cover"), so the larger of the two ratios
-// counts. Without a tile size it picks the middle layer.
-func chooseLayer(live []layerInfo, tileWidth, tileHeight int, haveTile bool) (string, bool) {
-	if len(live) == 0 {
-		return "", false
-	}
+// sortLayers orders layers from smallest to largest: by height once known,
+// by RID until then.
+func sortLayers(live []layerInfo) []layerInfo {
 	layers := append([]layerInfo(nil), live...)
 	sort.Slice(layers, func(i, j int) bool {
 		a, b := layers[i], layers[j]
@@ -112,19 +124,100 @@ func chooseLayer(live []layerInfo, tileWidth, tileHeight int, haveTile bool) (st
 		}
 		return ridRank(a.rid) < ridRank(b.rid)
 	})
+	return layers
+}
+
+// chooseIndex picks the layer for a tile of the given size in device pixels
+// from layers sorted by sortLayers: the smallest whose picture covers the
+// tile with at most maxUpscale enlargement, or the largest if none does.
+// The picture fills the tile ("cover"), so the larger of the two ratios
+// counts. Without a tile size it picks the middle layer.
+func chooseIndex(layers []layerInfo, tileWidth, tileHeight int, haveTile bool) int {
 	if !haveTile {
-		return layers[len(layers)/2].rid, true
+		return len(layers) / 2
 	}
-	for _, l := range layers {
+	for i, l := range layers {
 		if l.width == 0 || l.height == 0 {
 			continue
 		}
 		scale := max(float64(tileWidth)/float64(l.width), float64(tileHeight)/float64(l.height))
 		if scale <= maxUpscale {
-			return l.rid, true
+			return i
 		}
 	}
-	return layers[len(layers)-1].rid, true
+	return len(layers) - 1
+}
+
+// chooseLayer is chooseIndex on unsorted layers, returning the layer's RID.
+func chooseLayer(live []layerInfo, tileWidth, tileHeight int, haveTile bool) (string, bool) {
+	if len(live) == 0 {
+		return "", false
+	}
+	layers := sortLayers(live)
+	return layers[chooseIndex(layers, tileWidth, tileHeight, haveTile)].rid, true
+}
+
+// capIndex is the index in sorted layers of the largest one a cap allows:
+// the capped layer itself, or if it isn't arriving, the largest smaller one.
+func capIndex(layers []layerInfo, cap string) int {
+	best := 0
+	for i, l := range layers {
+		if l.rid == cap {
+			return i
+		}
+		if ridRank(l.rid) <= ridRank(cap) {
+			best = i
+		}
+	}
+	return best
+}
+
+// allocRequest is one camera a viewer receives, for allocate.
+type allocRequest struct {
+	area   int         // tile size in device pixels, so bigger tiles go first
+	layers []layerInfo // as arriving, sorted by sortLayers
+	want   int         // index of the layer the tile wants; -1 if off screen
+}
+
+// allocate shares a viewer's bandwidth between the cameras they watch. It
+// returns, for each request, the index of the largest layer it may have
+// (-1 for none).
+//
+// Every visible tile gets its smallest layer, whatever the budget: a small
+// picture beats a frozen one, and the estimate will drop no lower than the
+// connection can take. Then, round by round, each tile that wants more moves
+// up one layer if the extra cost still fits, bigger tiles first, so a pinned
+// person improves before the strip below them.
+func allocate(budget int, reqs []allocRequest) []int {
+	alloc := make([]int, len(reqs))
+	remaining := budget
+	order := make([]int, 0, len(reqs))
+	for i, r := range reqs {
+		if r.want < 0 || len(r.layers) == 0 {
+			alloc[i] = -1
+			continue
+		}
+		remaining -= r.layers[0].cost()
+		order = append(order, i)
+	}
+	sort.SliceStable(order, func(a, b int) bool { return reqs[order[a]].area > reqs[order[b]].area })
+
+	for upgraded := true; upgraded; {
+		upgraded = false
+		for _, i := range order {
+			r, cur := reqs[i], alloc[i]
+			if cur >= r.want || cur+1 >= len(r.layers) {
+				continue
+			}
+			extra := r.layers[cur+1].cost() - r.layers[cur].cost()
+			if extra <= remaining {
+				remaining -= extra
+				alloc[i]++
+				upgraded = true
+			}
+		}
+	}
+	return alloc
 }
 
 // streamRewriter joins a series of RTP streams (one layer, then another)

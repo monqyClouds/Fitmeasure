@@ -46,6 +46,29 @@ type layer struct {
 	lastPacket    time.Time
 	lastKeyAsk    time.Time
 	lastReport    *rtcp.SenderReport
+
+	// Bitrate, measured over half-second windows and smoothed.
+	bitrate     float64
+	windowBytes int
+	windowStart time.Time
+}
+
+// measure adds a packet's media to the layer's bitrate. Padding isn't
+// counted: senders add it to probe bandwidth, not to carry the picture.
+func (l *layer) measure(payloadBytes int, now time.Time) {
+	if l.windowStart.IsZero() {
+		l.windowStart = now
+	}
+	l.windowBytes += payloadBytes
+	if elapsed := now.Sub(l.windowStart); elapsed >= 500*time.Millisecond {
+		rate := float64(l.windowBytes*8) / elapsed.Seconds()
+		if l.bitrate == 0 {
+			l.bitrate = rate
+		} else {
+			l.bitrate = 0.7*l.bitrate + 0.3*rate
+		}
+		l.windowBytes, l.windowStart = 0, now
+	}
 }
 
 func newUpTrack(owner *participant, remote *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) *upTrack {
@@ -86,6 +109,7 @@ func (t *upTrack) readLayer(remote *webrtc.TrackRemote) {
 		l := t.layers[rid]
 		wasLive := now.Sub(l.lastPacket) < layerTimeout
 		l.lastPacket = now
+		l.measure(len(pkt.Payload), now)
 		resized := width > 0 && (width != l.width || height != l.height)
 		if resized {
 			l.width, l.height = width, height
@@ -120,7 +144,7 @@ func (t *upTrack) liveLayers() []layerInfo {
 	var live []layerInfo
 	for _, l := range t.layers {
 		if now.Sub(l.lastPacket) < layerTimeout {
-			live = append(live, layerInfo{rid: l.rid, width: l.width, height: l.height})
+			live = append(live, layerInfo{rid: l.rid, width: l.width, height: l.height, bitrate: int(l.bitrate)})
 		}
 	}
 	return live
@@ -229,6 +253,14 @@ type downTrack struct {
 	// packet would leave the subscriber with nothing to show meanwhile.
 	pending   []*rtp.Packet
 	pendingAt time.Time
+
+	// The largest layer the subscriber's bandwidth allows (stage 5), set
+	// by participant.allocate. Without a cap, the tile alone decides.
+	cap            string
+	capped         bool
+	capChangedAt   time.Time
+	lastCapDropped bool // the last change lowered the cap
+	lowRounds      int  // allocation rounds in a row below the cap
 }
 
 // pendingTimeout drops a keyframe that never completes (say a packet was
@@ -245,20 +277,116 @@ func newDownTrack(up *upTrack, sub *participant) (*downTrack, error) {
 	return &downTrack{up: up, sub: sub, local: local, rewriter: streamRewriter{clockRate: up.codec.ClockRate}}, nil
 }
 
-// retarget chooses the layer for this subscriber from the layers arriving
-// and the size of the publisher's tile on the subscriber's screen.
+// retarget chooses the layer for this subscriber from the layers arriving,
+// the size of the publisher's tile on the subscriber's screen, and the cap
+// the subscriber's bandwidth sets.
 func (d *downTrack) retarget() {
-	live := d.up.liveLayers()
-	width, height, haveTile := d.sub.tileSize(d.up.owner.id)
-	if d.up.kind == webrtc.RTPCodecTypeAudio {
-		width, height, haveTile = 0, 0, false // audio plays whatever the layout
+	layers := sortLayers(d.up.liveLayers())
+	if len(layers) == 0 {
+		d.setTarget("", false)
+		return
 	}
+	if d.up.kind == webrtc.RTPCodecTypeAudio {
+		d.setTarget(layers[0].rid, true) // audio plays whatever the layout
+		return
+	}
+	width, height, haveTile := d.sub.tileSize(d.up.owner.id)
 	if haveTile && (width == 0 || height == 0) {
 		d.setTarget("", false) // not on screen
 		return
 	}
-	rid, ok := chooseLayer(live, width, height, haveTile)
-	d.setTarget(rid, ok)
+	i := chooseIndex(layers, width, height, haveTile)
+	d.mu.Lock()
+	if d.capped {
+		i = min(i, capIndex(layers, d.cap))
+	}
+	d.mu.Unlock()
+	d.setTarget(layers[i].rid, true)
+}
+
+// capLevel is the index in layers of d's current cap (the largest layer if
+// uncapped).
+func (d *downTrack) capLevel(layers []layerInfo) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.capped {
+		return len(layers) - 1
+	}
+	return capIndex(layers, d.cap)
+}
+
+// forceCap sets the cap to a layer regardless of holds, for probing.
+func (d *downTrack) forceCap(rid string, now time.Time) {
+	d.mu.Lock()
+	changed := !d.capped || d.cap != rid
+	d.cap, d.capped, d.capChangedAt = rid, true, now
+	d.mu.Unlock()
+	if changed {
+		d.retarget()
+	}
+}
+
+// How long a cap stays put before it may rise again, so the estimate has
+// time to show whether the last change fitted: longer after a fall, so a
+// connection near a layer's edge doesn't flip between two layers.
+const (
+	upgradeHold          = 3 * time.Second
+	upgradeHoldAfterDrop = 10 * time.Second
+)
+
+// applyCap sets the bandwidth cap from one round of allocation. Each
+// argument is the layer index the allocation gives at a share of the
+// estimate:
+//
+//   - keep, at 118%: when GCC sees congestion it cuts its estimate to 85% of
+//     what is getting through, so only an estimate below 85% of the current
+//     layer's cost (keep < current) means trouble. Above that the estimate
+//     is just hovering near the rate being sent. Down after two such rounds
+//     (a second), or at once if even 150% of it (severe) wouldn't cover the
+//     current layer.
+//   - safe, at 85%: up only as far as this allows, and not until the hold
+//     since the last change is over.
+func (d *downTrack) applyCap(layers []layerInfo, keep, safe, severe, budget int, now time.Time) {
+	if keep < 0 || len(layers) == 0 {
+		return
+	}
+	d.mu.Lock()
+	next := min(keep, max(safe, 0))
+	if d.capped {
+		cur := capIndex(layers, d.cap)
+		next = cur
+		switch {
+		case keep < cur:
+			d.lowRounds++
+			if severe < cur || d.lowRounds >= 2 {
+				next = keep
+			}
+		case safe > cur:
+			d.lowRounds = 0
+			hold := upgradeHold
+			if d.lastCapDropped {
+				hold = upgradeHoldAfterDrop
+			}
+			if now.Sub(d.capChangedAt) >= hold {
+				next = safe
+			}
+		default:
+			d.lowRounds = 0
+		}
+		if next != cur {
+			d.lastCapDropped = next < cur
+		}
+	}
+	rid := layers[next].rid
+	changed := !d.capped || rid != d.cap
+	if changed {
+		d.cap, d.capped, d.capChangedAt, d.lowRounds = rid, true, now, 0
+	}
+	d.mu.Unlock()
+	if changed {
+		d.sub.log.Info("room: cap", "from", d.up.owner.name, "rid", rid, "budget", budget, "cost", layers[next].cost())
+		d.retarget()
+	}
 }
 
 func (d *downTrack) setTarget(rid string, wanted bool) {
@@ -301,6 +429,9 @@ func (d *downTrack) write(rid string, pkt *rtp.Packet, keyframe bool, now time.T
 			d.current, d.forwarding = rid, true
 			d.rewriter.switchTo(pkt.SequenceNumber, pkt.Timestamp, now)
 			defer func() { go d.sendLatestSenderReport() }()
+			if d.up.kind == webrtc.RTPCodecTypeVideo {
+				defer d.logLayer(rid)
+			}
 		} else {
 			// Switching: collect the keyframe, and switch once it's whole.
 			frame := d.collectKeyframe(pkt, keyframe, now)
@@ -320,6 +451,7 @@ func (d *downTrack) write(rid string, pkt *rtp.Packet, keyframe bool, now time.T
 			for _, p := range out {
 				d.send(p)
 			}
+			d.logLayer(rid)
 			// The new layer's clock mapping, so lip sync holds across the
 			// switch without waiting for the publisher's next report.
 			go d.sendLatestSenderReport()
@@ -335,6 +467,10 @@ func (d *downTrack) write(rid string, pkt *rtp.Packet, keyframe bool, now time.T
 	if ok {
 		d.send(rewritten(pkt, seq, ts))
 	}
+}
+
+func (d *downTrack) logLayer(rid string) {
+	d.sub.log.Info("room: layer", "from", d.up.owner.name, "rid", rid)
 }
 
 // waitForKeyframe is called, with d.mu held, while the target layer's
