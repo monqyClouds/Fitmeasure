@@ -11,6 +11,7 @@ import 'live_session_service.dart';
 import 'people_sheet.dart';
 import 'prejoin_screen.dart';
 import 'room_client.dart';
+import 'tile_order.dart';
 
 /// In a room: everyone else in a grid, yourself in a small floating tile,
 /// and the controls.
@@ -30,6 +31,16 @@ class _SessionScreenState extends State<SessionScreen> {
 
   /// The participant shown large, if any.
   String? _pinned;
+
+  /// Tile order across pages, the page shown, and whether a swipe is under
+  /// way (nothing reorders then).
+  final _order = TileOrder();
+  final _pages = PageController();
+  int _page = 0;
+  bool _swiping = false;
+
+  /// Speaker promotion depends on time passing, not only on events.
+  Timer? _tick;
   StreamSubscription<RoomNotice>? _notices;
 
   @override
@@ -43,6 +54,9 @@ class _SessionScreenState extends State<SessionScreen> {
       setState(() => _selfReady = true);
     });
     _notices = _client.notices.listen(_onNotice);
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && _reorder()) setState(() {});
+    });
     _client.join();
     // Keeps camera and mic going if the phone is locked or the app is put
     // in the background, with a notification that can end the session.
@@ -104,6 +118,26 @@ class _SessionScreenState extends State<SessionScreen> {
     }
   }
 
+  /// Updates the tile order; reports whether it changed.
+  bool _reorder() {
+    final host = _client.participants.values
+        .where((p) => p.role == Role.host)
+        .firstOrNull
+        ?.id;
+    return _order.update(
+      present: _client.participants.keys,
+      speaking: _client.speaking,
+      now: DateTime.now(),
+      pinned: _pinned,
+      host: host,
+      frozen: _swiping,
+    );
+  }
+
+  void _goTo(int page) {
+    _pages.animateToPage(page, duration: Motion.medium, curve: Motion.standard);
+  }
+
   void _onChange() {
     if (!mounted) return;
     if (_client.state == RoomState.ended && !_closing) {
@@ -121,6 +155,8 @@ class _SessionScreenState extends State<SessionScreen> {
 
   @override
   void dispose() {
+    _tick?.cancel();
+    _pages.dispose();
     _notices?.cancel();
     LiveSessionService.stop();
     WakelockPlus.disable();
@@ -140,6 +176,15 @@ class _SessionScreenState extends State<SessionScreen> {
   @override
   Widget build(BuildContext context) {
     final others = _client.participants.values.toList();
+    _reorder();
+    final pages = _order.pages;
+    final page = pages.isEmpty ? 0 : _page.clamp(0, pages.length - 1);
+    // Only the current page's tiles get video.
+    _client.setOnScreen(pages.isEmpty ? {} : pages[page].toSet());
+    final offPageSpeaker = _client.speaking
+        .where((id) => _client.participants.containsKey(id))
+        .where((id) => _order.pageOf(id) != page)
+        .firstOrNull;
     return PopScope(
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) _client.leave();
@@ -164,16 +209,31 @@ class _SessionScreenState extends State<SessionScreen> {
                                 connecting:
                                     _client.state == RoomState.connecting,
                               )
-                            : _Grid(
-                                others: others,
-                                speaking: _client.speaking,
+                            : _PagedGrid(
+                                client: _client,
+                                pages: pages,
                                 pinned: _pinned,
-                                onTap: (id) => setState(
-                                  () => _pinned = _pinned == id ? null : id,
-                                ),
-                                onSize: _client.reportTile,
+                                controller: _pages,
+                                onPage: (i) => setState(() => _page = i),
+                                onSwipe: (on) => setState(() => _swiping = on),
+                                onTap: (id) => setState(() {
+                                  _pinned = _pinned == id ? null : id;
+                                  if (_pinned != null) _goTo(0);
+                                }),
                               ),
                       ),
+                      if (offPageSpeaker != null)
+                        Positioned(
+                          top: 12,
+                          left: 0,
+                          right: 0,
+                          child: Center(
+                            child: _SpeakingChip(
+                              name: _client.participants[offPageSpeaker]!.name,
+                              onTap: () => _goTo(_order.pageOf(offPageSpeaker)),
+                            ),
+                          ),
+                        ),
                       if (_selfReady)
                         _FloatingSelf(
                           area: box.biggest,
@@ -190,6 +250,11 @@ class _SessionScreenState extends State<SessionScreen> {
                   ),
                 ),
               ),
+              if (pages.length > 1)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: _PageDots(count: pages.length, current: page),
+                ),
               _ControlBar(client: _client, onLeave: _leave),
             ],
           ),
@@ -249,84 +314,203 @@ class _TopBar extends StatelessWidget {
   }
 }
 
-/// Everyone else, sized to fill the space: one fills it, two stack, three
-/// or four make a 2×2 grid. A pinned person fills the top, with the others
-/// in a strip below. Tap a tile to pin it, again to unpin.
-class _Grid extends StatelessWidget {
-  const _Grid({
-    required this.others,
-    required this.speaking,
+/// Everyone else, six to a page, swiped left and right. A page lays its
+/// tiles out to fill the space: in portrait one column for one or two
+/// people, then two columns (up to 2 × 3); in landscape up to three columns
+/// (3 × 2). A pinned person fills most of the first page, with a strip of
+/// two others. Only the current page's tiles get video.
+class _PagedGrid extends StatelessWidget {
+  const _PagedGrid({
+    required this.client,
+    required this.pages,
     required this.pinned,
+    required this.controller,
+    required this.onPage,
+    required this.onSwipe,
     required this.onTap,
-    required this.onSize,
   });
 
-  final List<RemoteParticipant> others;
-  final Set<String> speaking;
+  final RoomClient client;
+  final List<List<String>> pages;
   final String? pinned;
+  final PageController controller;
+  final ValueChanged<int> onPage;
+  final ValueChanged<bool> onSwipe;
   final ValueChanged<String> onTap;
-
-  /// Each tile's size in device pixels, for the server to pick its layer.
-  final void Function(String id, int width, int height) onSize;
 
   @override
   Widget build(BuildContext context) {
-    Widget tile(RemoteParticipant p) => _RemoteTile(
-      key: ValueKey(p.id),
-      participant: p,
-      speaking: speaking.contains(p.id),
-      onTap: () => onTap(p.id),
-      onSize: (w, h) => onSize(p.id, w, h),
-    );
-    const gap = 6.0;
-    Widget row(List<Widget> children) => Expanded(
-      child: Row(
-        children: [
-          for (var i = 0; i < children.length; i++) ...[
-            if (i > 0) const SizedBox(width: gap),
-            Expanded(child: children[i]),
-          ],
-        ],
+    return NotificationListener<ScrollNotification>(
+      onNotification: (n) {
+        // Tiles don't reorder while a swipe is under way.
+        if (n is ScrollStartNotification) onSwipe(true);
+        if (n is ScrollEndNotification) onSwipe(false);
+        return false;
+      },
+      child: PageView.builder(
+        controller: controller,
+        itemCount: pages.length,
+        onPageChanged: onPage,
+        itemBuilder: (context, i) => Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          child: _Page(
+            client: client,
+            ids: pages[i],
+            pinned: i == 0 ? pinned : null,
+            onTap: onTap,
+          ),
+        ),
       ),
     );
+  }
+}
 
-    final pin = others.where((p) => p.id == pinned).firstOrNull;
-    final Widget body;
-    if (pin != null && others.length > 1) {
-      final rest = [
-        for (final p in others)
-          if (p != pin) tile(p),
-      ];
-      body = Column(
-        children: [
-          Expanded(flex: 3, child: tile(pin)),
-          const SizedBox(height: gap),
-          row(rest),
-        ],
+class _Page extends StatelessWidget {
+  const _Page({
+    required this.client,
+    required this.ids,
+    required this.pinned,
+    required this.onTap,
+  });
+
+  final RoomClient client;
+  final List<String> ids;
+  final String? pinned;
+  final ValueChanged<String> onTap;
+
+  static const gap = 6.0;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget tile(String id) {
+      final p = client.participants[id];
+      if (p == null) return const SizedBox.shrink();
+      return _RemoteTile(
+        // A global key: when the order changes (a speaker promoted), Flutter
+        // moves the tile with its video surface instead of building a new
+        // one, which can show black until it's re-attached.
+        key: GlobalObjectKey(p),
+        participant: p,
+        speaking: client.speaking.contains(id),
+        onTap: () => onTap(id),
+        onSize: (w, h) => client.reportTile(id, w, h),
       );
-    } else {
-      final tiles = [for (final p in others) tile(p)];
-      body = switch (tiles.length) {
-        1 => tiles.first,
-        2 => Column(
-          children: [
-            Expanded(child: tiles[0]),
-            const SizedBox(height: gap),
-            Expanded(child: tiles[1]),
-          ],
-        ),
-        _ => Column(
-          children: [
-            row(tiles.sublist(0, 2)),
-            const SizedBox(height: gap),
-            row(tiles.sublist(2)),
-          ],
-        ),
-      };
     }
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      child: body,
+
+    return LayoutBuilder(
+      builder: (context, box) {
+        final landscape = box.maxWidth > box.maxHeight;
+        final tiles = [for (final id in ids) tile(id)];
+
+        if (pinned != null && ids.length > 1) {
+          // The pinned person large, the others in a strip beside them.
+          final rest = tiles.sublist(1);
+          final strip = landscape
+              ? Column(children: _spaced(rest, Axis.vertical))
+              : Row(children: _spaced(rest, Axis.horizontal));
+          final children = [
+            Expanded(flex: 3, child: tiles.first),
+            const SizedBox(width: gap, height: gap),
+            Expanded(child: strip),
+          ];
+          return landscape
+              ? Row(children: children)
+              : Column(children: children);
+        }
+
+        final n = tiles.length;
+        final columns = landscape ? n.clamp(1, 3) : (n <= 2 ? 1 : 2);
+        final rows = (n / columns).ceil();
+        return Column(
+          children: _spaced([
+            for (var r = 0; r < rows; r++)
+              Row(
+                children: _spaced([
+                  for (var c = 0; c < columns; c++)
+                    r * columns + c < n
+                        ? tiles[r * columns + c]
+                        : const SizedBox.shrink(), // keep tiles the same size
+                ], Axis.horizontal),
+              ),
+          ], Axis.vertical),
+        );
+      },
+    );
+  }
+
+  /// Children expanded equally, with gaps between.
+  static List<Widget> _spaced(List<Widget> children, Axis axis) => [
+    for (var i = 0; i < children.length; i++) ...[
+      if (i > 0)
+        SizedBox(
+          width: axis == Axis.horizontal ? gap : 0,
+          height: axis == Axis.vertical ? gap : 0,
+        ),
+      Expanded(child: children[i]),
+    ],
+  ];
+}
+
+/// Dots for the pages, with the current one long.
+class _PageDots extends StatelessWidget {
+  const _PageDots({required this.count, required this.current});
+  final int count;
+  final int current;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        for (var i = 0; i < count; i++)
+          AnimatedContainer(
+            duration: Motion.fast,
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            width: i == current ? 18 : 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: i == current ? accent : AppColors.textTertiary,
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// Someone speaking on another page; tap to go there.
+class _SpeakingChip extends StatelessWidget {
+  const _SpeakingChip({required this.name, required this.onTap});
+  final String name;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    return Material(
+      color: Colors.black.withValues(alpha: 0.7),
+      shape: StadiumBorder(side: BorderSide(color: accent)),
+      child: InkWell(
+        customBorder: const StadiumBorder(),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.graphic_eq_rounded, size: 16, color: accent),
+              const SizedBox(width: 6),
+              Text(
+                '$name is speaking',
+                style: Theme.of(context).textTheme.labelMedium!
+                    .copyWith(color: Colors.white),
+              ),
+              const Icon(Icons.chevron_right_rounded, size: 18),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -373,12 +557,25 @@ class _RemoteTile extends StatelessWidget {
             micOn: p.mic,
             speaking: speaking,
             video: p.stream != null && p.hasVideo && p.camera
-                ? RTCVideoView(
-                    p.renderer,
-                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                    placeholderBuilder: (_) => _Placeholder(name: name),
+                ? Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      RTCVideoView(
+                        p.renderer,
+                        objectFit:
+                            RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                      ),
+                      // Until the first frame is decoded (after joining, or
+                      // swiping to their page) show who it is, not black.
+                      ValueListenableBuilder(
+                        valueListenable: p.renderer,
+                        builder: (_, value, _) => value.width == 0
+                            ? _Placeholder(name: p.name)
+                            : const SizedBox.shrink(),
+                      ),
+                    ],
                   )
-                : _Placeholder(name: name),
+                : _Placeholder(name: p.name),
           ),
         );
       },

@@ -79,7 +79,7 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
               const SizedBox(height: 4),
               stagger(
                 Text(
-                  'Train together over video, up to four of you.',
+                  'Train together over video, up to 16 of you.',
                   style: t.bodyLarge!.copyWith(color: AppColors.textSecondary),
                 ),
               ),

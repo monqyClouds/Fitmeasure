@@ -811,6 +811,13 @@ func TestRoomSpeakers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Renegotiate only once the first offer has been answered.
+	for deadline := time.Now().Add(5 * time.Second); a.pub.SignalingState() != webrtc.SignalingStateStable; {
+		if time.Now().After(deadline) {
+			t.Fatal("first publish offer never answered")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	offer, err := a.pub.CreateOffer(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -959,6 +966,34 @@ func TestRoomResume(t *testing.T) {
 	}
 
 	// a never saw b leave.
+	for {
+		select {
+		case m := <-a.events:
+			if m.Type == signal.TypeParticipantLeft {
+				t.Fatalf("a was told b left: %+v", m)
+			}
+			continue
+		default:
+		}
+		break
+	}
+}
+
+// A close with 1001 ("going away") is a dropped connection, not a leave:
+// Dart's WebSocket sends it when its keep-alive pings go unanswered.
+func TestRoomGoingAwayKeepsPlace(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	a := joinRoom(t, url, "ada")
+	b := joinRoom(t, url, "bo")
+
+	b.wsMu.Lock()
+	b.dropped.Store(true)
+	_ = b.ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseGoingAway, ""))
+	b.ws.Close()
+	b.wsMu.Unlock()
+	time.Sleep(time.Second)
+	b.reconnect(url)
+	waitEvent(t, b, signal.TypeResumed, func(signal.Message) bool { return true })
 	for {
 		select {
 		case m := <-a.events:

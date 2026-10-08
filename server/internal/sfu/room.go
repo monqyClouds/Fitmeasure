@@ -1,6 +1,6 @@
 package sfu
 
-// Stage 2 (this file) is a small room: up to four people, and everyone
+// Stage 2 (this file) began as a small room: up to four people, and everyone
 // receives everyone else's camera and microphone at a single quality.
 //
 // It adds three things to the echo:
@@ -39,11 +39,11 @@ import (
 	"github.com/monqyClouds/Fitmeasure/server/internal/signal"
 )
 
-// DefaultMaxParticipants is the room size for stage 2. Every participant
-// receives every other one at full quality, so cost grows with the square of
-// the room size; simulcast (stage 4) and bandwidth estimation (stage 5) are
-// what make larger rooms work.
-const DefaultMaxParticipants = 4
+// DefaultMaxParticipants is the room size. Every participant could receive
+// every other one, so cost grows with the square of the room size;
+// simulcast (stage 4), bandwidth estimation (stage 5) and sending no video
+// to tiles that are off screen (clients page their grids) keep 16 workable.
+const DefaultMaxParticipants = 16
 
 // keyframeInterval limits how often we ask a publisher for a keyframe. Every
 // subscriber's decoder may ask at once (say, when one joins), and a keyframe
@@ -130,9 +130,12 @@ func (rs *Rooms) resume(w http.ResponseWriter, r *http.Request, token string) {
 }
 
 // deliberateLeave reports whether the WebSocket was closed by the client on
-// purpose, rather than dropped.
+// purpose, rather than dropped. Our clients close with 1000 when leaving
+// (browsers send 1005 for a plain close()). 1001, "going away", is not a
+// leave: Dart sends it when its keep-alive pings go unanswered, which is
+// exactly a dropped connection.
 func deliberateLeave(err error) bool {
-	return websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived)
+	return websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived)
 }
 
 func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -305,7 +308,7 @@ func (rs *Rooms) join(roomName string, p *participant) (*room, []signal.Particip
 		p.setRole(signal.RoleHost)
 	}
 	others := make([]signal.Participant, 0, len(rm.participants))
-	for _, q := range rm.participants {
+	for _, q := range rm.inJoinOrder() {
 		others = append(others, q.info())
 	}
 	tracks := make([]*upTrack, 0, len(rm.tracks))
@@ -404,6 +407,30 @@ func (rm *room) watchSpeakers() {
 			}
 		}
 	}
+}
+
+// inJoinOrder is everyone in the room, longest-present first; clients lay
+// tiles out in this order. Called with rm.mu held.
+func (rm *room) inJoinOrder() []*participant {
+	list := make([]*participant, 0, len(rm.participants))
+	for _, q := range rm.participants {
+		list = append(list, q)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].joinedAt.Before(list[j].joinedAt) })
+	return list
+}
+
+// othersInJoinOrder is everyone except p, longest-present first.
+func (rm *room) othersInJoinOrder(p *participant) []*participant {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	var list []*participant
+	for _, q := range rm.inJoinOrder() {
+		if q != p {
+			list = append(list, q)
+		}
+	}
+	return list
 }
 
 // others returns everyone in the room except p.
@@ -647,7 +674,7 @@ func (p *participant) restartICE() {
 func (p *participant) resumed(iceServers []webrtc.ICEServer) {
 	var others []signal.Participant
 	if p.room != nil {
-		for _, q := range p.room.others(p) {
+		for _, q := range p.room.othersInJoinOrder(p) {
 			others = append(others, q.info())
 		}
 	}

@@ -41,6 +41,18 @@ let lastLayout = '';
 let layoutTimer = null;
 const resizeObserver = new ResizeObserver(() => scheduleLayout());
 
+// Which tiles are in view. With 16 people the page scrolls, and tiles out
+// of view are left out of the layout, so the server sends them no video.
+const visibleTiles = new Set();
+const visibilityObserver = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    const id = e.target.dataset.id;
+    if (e.isIntersecting) visibleTiles.add(id);
+    else visibleTiles.delete(id);
+  }
+  scheduleLayout();
+});
+
 function log(text, kind = '') {
   const li = document.createElement('li');
   const time = new Date().toLocaleTimeString([], { hour12: false });
@@ -120,6 +132,8 @@ function ensureTile(id) {
       log(`${pinned ? 'Enlarged' : 'Shrank'} ${nameOf(id)}'s tile`);
     };
     resizeObserver.observe(figure);
+    figure.dataset.id = id;
+    visibilityObserver.observe(figure);
   }
   tile = { figure, video, avatar, caption, detail: '' };
   tiles.set(id, tile);
@@ -161,6 +175,8 @@ function removeTile(id) {
   if (!tile) return;
   tile.video.srcObject = null;
   resizeObserver.unobserve(tile.figure);
+  visibilityObserver.unobserve(tile.figure);
+  visibleTiles.delete(id);
   tile.figure.remove();
   tiles.delete(id);
   scheduleLayout();
@@ -179,7 +195,7 @@ function sendLayout() {
   const dpr = window.devicePixelRatio || 1;
   const list = [];
   for (const [id, tile] of tiles) {
-    if (id === me) continue;
+    if (id === me || !visibleTiles.has(id)) continue;
     const r = tile.figure.getBoundingClientRect();
     list.push({ id, width: Math.round(r.width * dpr), height: Math.round(r.height * dpr) });
   }
@@ -753,6 +769,12 @@ $('room').value = params.get('room') || 'gym';
 try { $('name').value = localStorage.getItem('fitmeasure-name') || ''; } catch {}
 $('join').onsubmit = join;
 $('stop').onclick = leave;
+// Closing or leaving the tab is a deliberate leave: say so with a normal
+// close, or the server would hold our place for the reconnect grace.
+window.addEventListener('pagehide', () => {
+  resumeToken = null;
+  if (ws) ws.close(1000);
+});
 $('mic').onclick = () => toggle('mic');
 $('lock').onchange = () => send({ type: 'set_settings', locked: $('lock').checked });
 $('everyone').onchange = () => send({ type: 'set_settings', everyoneCanModerate: $('everyone').checked });

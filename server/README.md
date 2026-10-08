@@ -26,7 +26,7 @@ Open <http://localhost:8080> in Chrome or Firefox. It opens the latest stage:
 
 - **Small room** (`/room/`): enter a name and press **Join**. Open the page in
   more tabs, browsers or devices and join the same room; everyone sees
-  everyone, up to four people. The log shows every signalling step, including
+  everyone, up to 16 people. The log shows every signalling step, including
   the server's new offer each time someone joins or leaves.
 - **Echo** (`/echo/`): press **Start**. The right-hand video has made the round
   trip through the server.
@@ -308,4 +308,10 @@ web/static/              plain JavaScript test pages for the stages
   host leaves, the longest-present moderator takes over, otherwise the
   longest-present participant. Every action is checked on the server.
   Without accounts, a removed person can rejoin under another name.
+- **Rooms of 16, paged.** Phones show six people a page (2 × 3, or 3 × 2 in
+  landscape), swiped left and right; the web page scrolls. Only the tiles on
+  screen are in the layout message, so people on other pages or scrolled
+  out of view get no video at all, and a phone decodes at most six streams.
+  Someone who speaks for two seconds while off the first page moves onto
+  it; a chip names anyone speaking on another page and jumps there.
 

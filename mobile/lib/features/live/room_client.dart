@@ -217,6 +217,10 @@ class RoomClient extends ChangeNotifier {
   Timer? _statsTimer;
   // Tile sizes reported by the screen, sent to the server when they change.
   final _tiles = <String, TileSize>{};
+
+  /// The people whose tiles are on screen (the current page). Everyone else
+  /// gets no video: they're left out of the layout.
+  Set<String>? _onScreen;
   String _sentLayout = '';
   Timer? _layoutTimer;
   bool _closed = false;
@@ -236,13 +240,13 @@ class RoomClient extends ChangeNotifier {
     }
   }
 
-  /// Opens the signalling WebSocket. Pings every few seconds notice a dead
+  /// Opens the signalling WebSocket. Pings every 10 seconds notice a dead
   /// connection (a phone that changed networks) quickly, so the reconnect
-  /// starts well within the 20 seconds the server keeps our place.
+  /// starts within the 20 seconds the server keeps our place.
   Future<void> _open(Uri uri) async {
     final WebSocketChannel ws = IOWebSocketChannel.connect(
       uri,
-      pingInterval: const Duration(seconds: 5),
+      pingInterval: const Duration(seconds: 10),
     );
     await ws.ready;
     await _wsSub?.cancel();
@@ -271,6 +275,9 @@ class RoomClient extends ChangeNotifier {
       await _end('Disconnected from the server');
       return;
     }
+    // A reconnected socket that closed again before the server resumed us:
+    // keep trying.
+    reconnecting = false;
     await _reconnect();
   }
 
@@ -452,14 +459,18 @@ class RoomClient extends ChangeNotifier {
 
       case SignalType.error:
         // Before the welcome an error means we weren't let in (e.g. the
-        // room is full); after it, it's informational.
+        // room is full); after it, it's informational, unless a resume was
+        // refused: our place is gone.
         if (myId == null) await _end(_describeError(msg.error));
+        if (msg.error == 'session expired') {
+          await _end('You lost your place in the room. Join again to go back.');
+        }
         debugPrint('live: server error: ${msg.error}');
     }
   }
 
   String _describeError(String? error) => switch (error) {
-    'room is full' => 'This room is full (4 people)',
+    'room is full' => 'This room is full (16 people)',
     final e? => 'The server said: $e',
     null => 'The server refused to let you in',
   };
@@ -647,6 +658,13 @@ class RoomClient extends ChangeNotifier {
     _scheduleLayout();
   }
 
+  /// Records which people are on screen now; the rest get no video.
+  void setOnScreen(Set<String> ids) {
+    if (setEquals(ids, _onScreen)) return;
+    _onScreen = ids;
+    _scheduleLayout();
+  }
+
   void _scheduleLayout() {
     _layoutTimer?.cancel();
     _layoutTimer = Timer(const Duration(milliseconds: 250), _sendLayout);
@@ -656,7 +674,9 @@ class RoomClient extends ChangeNotifier {
     if (_closed || myId == null) return;
     final tiles = [
       for (final t in _tiles.values)
-        if (participants.containsKey(t.id)) t,
+        if (participants.containsKey(t.id) &&
+            (_onScreen == null || _onScreen!.contains(t.id)))
+          t,
     ];
     final key = [for (final t in tiles) '${t.id}:${t.width}x${t.height}']
         .join(',');
