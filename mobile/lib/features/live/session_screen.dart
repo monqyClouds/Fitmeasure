@@ -4,6 +4,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../app/theme.dart';
 import '../../widgets/common.dart';
+import 'live_session_service.dart';
 import 'prejoin_screen.dart';
 import 'room_client.dart';
 import 'video_levels.dart';
@@ -35,6 +36,14 @@ class _SessionScreenState extends State<SessionScreen> {
       setState(() => _selfReady = true);
     });
     _client.join();
+    // Keeps camera and mic going if the phone is locked or the app is put
+    // in the background, with a notification that can end the session.
+    LiveSessionService.start(
+      room: _client.room,
+      onLeave: () {
+        if (mounted && !_closing) _leave();
+      },
+    );
   }
 
   void _onChange() {
@@ -54,6 +63,7 @@ class _SessionScreenState extends State<SessionScreen> {
 
   @override
   void dispose() {
+    LiveSessionService.stop();
     WakelockPlus.disable();
     _client.removeListener(_onChange);
     _self.srcObject = null;
