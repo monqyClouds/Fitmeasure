@@ -65,6 +65,7 @@ type received struct {
 type testPeer struct {
 	t      *testing.T
 	id     string
+	resume string // token from the welcome
 	ws     *websocket.Conn
 	wsMu   sync.Mutex
 	pub    *webrtc.PeerConnection
@@ -85,6 +86,7 @@ type testPeer struct {
 	simSender *webrtc.RTPSender
 
 	closing atomic.Bool // set once the test is tearing down
+	dropped atomic.Bool // offline between drop and reconnect: sends fail
 }
 
 func joinRoom(t *testing.T, url, name string) *testPeer {
@@ -120,7 +122,7 @@ func joinRoomOpts(t *testing.T, url, name string, policy webrtc.ICETransportPoli
 
 	api := newTestAPI(t)
 	p := &testPeer{
-		t: t, id: welcome.ID, ws: ws,
+		t: t, id: welcome.ID, resume: welcome.Resume, ws: ws,
 		media:         make(chan received, 64),
 		events:        make(chan signal.Message, 64),
 		senderReports: make(chan *rtcp.SenderReport, 16),
@@ -228,7 +230,7 @@ func joinRoomOpts(t *testing.T, url, name string, policy webrtc.ICETransportPoli
 func (p *testPeer) send(m signal.Message) {
 	p.wsMu.Lock()
 	defer p.wsMu.Unlock()
-	if err := p.ws.WriteJSON(m); err != nil {
+	if err := p.ws.WriteJSON(m); err != nil && !p.dropped.Load() {
 		p.fail(err)
 	}
 }
@@ -241,11 +243,46 @@ func (p *testPeer) fail(err error) {
 	}
 }
 
+// leave closes the WebSocket properly, as the Leave button does.
+func (p *testPeer) leave() {
+	p.wsMu.Lock()
+	defer p.wsMu.Unlock()
+	_ = p.ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+	p.ws.Close()
+}
+
+// drop cuts the WebSocket without a close message, like a phone losing its
+// network.
+func (p *testPeer) drop() {
+	p.wsMu.Lock()
+	defer p.wsMu.Unlock()
+	p.dropped.Store(true)
+	p.ws.Close()
+}
+
+// reconnect opens a new WebSocket with the resume token, as a client does
+// after its connection dropped, and reads from it.
+func (p *testPeer) reconnect(url string) {
+	ws, _, err := websocket.DefaultDialer.Dial(url+"?resume="+p.resume, nil)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	p.t.Cleanup(func() { ws.Close() })
+	p.wsMu.Lock()
+	p.ws = ws
+	p.dropped.Store(false)
+	p.wsMu.Unlock()
+	go p.readLoop()
+}
+
 func (p *testPeer) readLoop() {
 	pcs := map[string]*webrtc.PeerConnection{signal.PCPublish: p.pub, signal.PCSubscribe: p.sub}
+	p.wsMu.Lock()
+	ws := p.ws
+	p.wsMu.Unlock()
 	for {
 		var m signal.Message
-		if err := p.ws.ReadJSON(&m); err != nil {
+		if err := ws.ReadJSON(&m); err != nil {
 			return
 		}
 		switch m.Type {
@@ -444,7 +481,7 @@ func TestRoomLeaveRenegotiates(t *testing.T) {
 		}
 	}
 
-	b.ws.Close()
+	b.leave()
 
 	var left, reoffered bool
 	deadline = time.After(10 * time.Second)
@@ -861,6 +898,81 @@ func TestRoomCameraOff(t *testing.T) {
 	}
 	if received() == before {
 		t.Fatal("video didn't resume with the camera back on")
+	}
+}
+
+// A dropped WebSocket (no close message) keeps the person in the room for
+// the grace period. Reconnecting with the resume token brings them back:
+// nobody sees them leave, they get the room as it is now and an ICE restart
+// offer, and media carries on.
+func TestRoomResume(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	stop := make(chan struct{})
+	defer close(stop)
+	a := joinRoom(t, url, "ada")
+	go a.publishUntil(stop)
+	b := joinRoom(t, url, "bo")
+
+	count := func() int {
+		b.videoMu.Lock()
+		defer b.videoMu.Unlock()
+		return len(b.videoLog)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	b.drop()
+	time.Sleep(time.Second)
+	b.reconnect(url)
+
+	resumed := waitEvent(t, b, signal.TypeResumed, func(signal.Message) bool { return true })
+	if resumed.ID != b.id || len(resumed.Participants) != 1 || resumed.Participants[0].ID != a.id {
+		t.Fatalf("got %+v, want b's ID and a in the room", resumed)
+	}
+	offer := waitEvent(t, b, signal.TypeOffer, func(signal.Message) bool { return true })
+	if !strings.Contains(offer.SDP, "a=ice-ufrag") {
+		t.Fatalf("no ICE credentials in the offer after resuming")
+	}
+
+	before := count()
+	deadline = time.Now().Add(10 * time.Second)
+	for count() == before && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if count() == before {
+		t.Fatal("no video after resuming")
+	}
+
+	// a never saw b leave.
+	for {
+		select {
+		case m := <-a.events:
+			if m.Type == signal.TypeParticipantLeft {
+				t.Fatalf("a was told b left: %+v", m)
+			}
+			continue
+		default:
+		}
+		break
+	}
+}
+
+// Without a resume, the person leaves once the grace period is over.
+func TestRoomResumeGraceExpires(t *testing.T) {
+	url := serveRooms(t, &Rooms{ResumeGrace: time.Second}) + "gym"
+	a := joinRoom(t, url, "ada")
+	b := joinRoom(t, url, "bo")
+	b.drop()
+	waitEvent(t, a, signal.TypeParticipantLeft, func(m signal.Message) bool { return m.Participant.ID == b.id })
+
+	// The token no longer works.
+	ws := dial(t, url+"?resume="+b.resume)
+	var m signal.Message
+	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := ws.ReadJSON(&m); err != nil || m.Type != signal.TypeError {
+		t.Fatalf("got %+v %v, want an error", m, err)
 	}
 }
 

@@ -98,6 +98,19 @@ void main() {
     );
   });
 
+  test('decodes a resume token and a resumed room', () {
+    final welcome = SignalMessage.decode(
+      '{"type": "welcome", "id": "me", "resume": "secret"}',
+    );
+    expect(welcome.resume, 'secret');
+    final resumed = SignalMessage.decode(
+      '{"type": "resumed", "id": "me", "resume": "secret", '
+      '"participants": [{"id": "p1", "name": "Ada", "mic": false, "camera": true}]}',
+    );
+    expect(resumed.type, SignalType.resumed);
+    expect(resumed.participants.single.mic, isFalse);
+  });
+
   test('encodes a layout', () {
     expect(
       const SignalMessage(

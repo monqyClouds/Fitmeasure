@@ -33,6 +33,14 @@ abstract final class SignalType {
 
   /// Server to client: who is speaking now.
   static const speakers = 'speakers';
+
+  /// Server to client: back in the room after reconnecting with our resume
+  /// token; the room as it is now.
+  static const resumed = 'resumed';
+
+  /// Client to server: our media paths failed; restart ICE on the
+  /// subscribe connection.
+  static const restartIce = 'restart_ice';
 }
 
 abstract final class PeerName {
@@ -114,6 +122,7 @@ class SignalMessage {
     this.mic,
     this.camera,
     this.speakers = const [],
+    this.resume,
   });
 
   factory SignalMessage.decode(String text) {
@@ -127,6 +136,7 @@ class SignalMessage {
         _ => null,
       },
       error: json['error'] as String?,
+      resume: json['resume'] as String?,
       bitrate: json['bitrate'] as int?,
       speakers: [
         for (final s in (json['speakers'] as List?) ?? const []) s as String,
@@ -170,6 +180,9 @@ class SignalMessage {
 
   /// In a speakers message: who is speaking (participant IDs).
   final List<String> speakers;
+
+  /// In a welcome or resumed: the secret token for reconnecting.
+  final String? resume;
 
   String encode() => jsonEncode({
     'type': type,

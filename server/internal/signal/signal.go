@@ -43,6 +43,16 @@ const (
 	// Server to client: who is speaking now (Speakers, participant IDs),
 	// whenever that changes.
 	TypeSpeakers = "speakers"
+
+	// Server to client: after reconnecting with a resume token, you're back
+	// in the room. ID and Participants as in a welcome (you may have missed
+	// joins and leaves), and fresh ICEServers. Both connections then restart
+	// ICE, since the network may have changed.
+	TypeResumed = "resumed"
+	// Client to server: our media paths failed while the WebSocket is fine
+	// (say the phone changed networks); restart ICE on the subscribe
+	// connection. The client restarts the publish connection itself.
+	TypeRestartICE = "restart_ice"
 )
 
 // Peer connection names. In a room each participant has two: one to publish
@@ -80,6 +90,10 @@ type Message struct {
 	// Mic and Camera, in a state, are whether each is on.
 	Mic    *bool `json:"mic,omitempty"`
 	Camera *bool `json:"camera,omitempty"`
+
+	// Resume, in a welcome or resumed, is a secret token: reconnecting with
+	// ?resume=<token> within the grace period puts you back in the room.
+	Resume string `json:"resume,omitempty"`
 
 	// Speakers, in a speakers message. Missing means nobody.
 	Speakers []string `json:"speakers,omitempty"`

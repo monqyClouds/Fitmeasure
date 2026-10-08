@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:web_socket_channel/io.dart';
+import 'package:web_socket_channel/status.dart' as ws_status;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'live_protocol.dart';
@@ -125,6 +127,12 @@ class RoomClient extends ChangeNotifier {
 
   RoomState state = RoomState.connecting;
 
+  /// True while reconnecting after the connection to the server dropped,
+  /// as when the phone changes networks. The server keeps our place for 20
+  /// seconds.
+  bool reconnecting = false;
+  String? _resumeToken;
+
   /// Why the room ended, if not by leaving.
   String? endReason;
   String? myId;
@@ -157,45 +165,111 @@ class RoomClient extends ChangeNotifier {
   bool _closed = false;
   bool _disposed = false;
 
+  Uri _roomUri(Map<String, String> query) => liveServer.replace(
+    scheme: liveServer.scheme == 'https' ? 'wss' : 'ws',
+    path: '/ws/rooms/$room',
+    queryParameters: query,
+  );
+
   Future<void> join() async {
-    final uri = liveServer.replace(
-      scheme: liveServer.scheme == 'https' ? 'wss' : 'ws',
-      path: '/ws/rooms/$room',
-      queryParameters: {'name': name},
-    );
     try {
-      final ws = WebSocketChannel.connect(uri);
-      _ws = ws;
-      await ws.ready;
-      _wsSub = ws.stream.listen(
-        (data) {
-          final msg = SignalMessage.decode(data as String);
-          // One message at a time, in order: a candidate must not be
-          // applied before the offer it belongs to.
-          _queue = _queue
-              .then((_) => _handle(msg))
-              .catchError((Object e) => _end('Something went wrong: $e'));
-        },
-        // After any queued messages, so a refusal like "room is full"
-        // explains the close rather than being lost to it.
-        onDone: () =>
-            _queue = _queue.then((_) => _end('Disconnected from the server')),
-        onError: (_) => _queue = _queue.then(
-          (_) => _end('Lost the connection to the server'),
-        ),
-      );
+      await _open(_roomUri({'name': name}));
     } catch (_) {
       await _end("Couldn't reach the server");
     }
   }
 
-  void _send(SignalMessage m) => _ws?.sink.add(m.encode());
+  /// Opens the signalling WebSocket. Pings every few seconds notice a dead
+  /// connection (a phone that changed networks) quickly, so the reconnect
+  /// starts well within the 20 seconds the server keeps our place.
+  Future<void> _open(Uri uri) async {
+    final WebSocketChannel ws = IOWebSocketChannel.connect(
+      uri,
+      pingInterval: const Duration(seconds: 5),
+    );
+    await ws.ready;
+    await _wsSub?.cancel();
+    _ws = ws;
+    _wsSub = ws.stream.listen(
+      (data) {
+        final msg = SignalMessage.decode(data as String);
+        // One message at a time, in order: a candidate must not be
+        // applied before the offer it belongs to.
+        _queue = _queue
+            .then((_) => _handle(msg))
+            .catchError((Object e) => _end('Something went wrong: $e'));
+      },
+      // After any queued messages, so a refusal like "room is full"
+      // explains the close rather than being lost to it.
+      onDone: () => _queue = _queue.then((_) => _socketClosed(ws)),
+      onError: (_) => _queue = _queue.then((_) => _socketClosed(ws)),
+    );
+  }
+
+  /// The WebSocket closed without us leaving: reconnect if we're in the
+  /// room, otherwise it's the end.
+  Future<void> _socketClosed(WebSocketChannel ws) async {
+    if (_closed || ws != _ws) return;
+    if (_resumeToken == null) {
+      await _end('Disconnected from the server');
+      return;
+    }
+    await _reconnect();
+  }
+
+  /// Reconnects with the resume token, trying every second for as long as
+  /// the server keeps our place.
+  Future<void> _reconnect() async {
+    if (reconnecting || _closed) return;
+    reconnecting = true;
+    _ws = null;
+    notifyListeners();
+    final until = DateTime.now().add(const Duration(seconds: 20));
+    while (!_closed && DateTime.now().isBefore(until)) {
+      try {
+        await _open(_roomUri({'resume': _resumeToken!}));
+        return; // the server's "resumed" finishes it
+      } catch (_) {
+        await Future<void>.delayed(const Duration(seconds: 1));
+      }
+    }
+    if (!_closed) await _end('Lost the connection to the server');
+  }
+
+  /// Gathers new candidates for our sending connection, as after changing
+  /// networks; the server answers the new offer.
+  Future<void> _restartPublishIce() async {
+    final pub = _pub;
+    if (pub == null) return;
+    // Marks the next offer as an ICE restart (new credentials, so new
+    // candidates are gathered and checked). On Android an iceRestart
+    // option to createOffer is ignored.
+    await pub.restartIce();
+    final offer = await pub.createOffer();
+    await pub.setLocalDescription(offer);
+    _send(
+      SignalMessage(
+        type: SignalType.offer,
+        pc: PeerName.publish,
+        sdp: offer.sdp,
+      ),
+    );
+  }
+
+  void _send(SignalMessage m) {
+    // While reconnecting there's no socket; the server catches up after.
+    if (reconnecting) return;
+    try {
+      _ws?.sink.add(m.encode());
+    } catch (_) {}
+  }
 
   Future<void> _handle(SignalMessage msg) async {
     if (_closed) return;
     switch (msg.type) {
       case SignalType.welcome:
         myId = msg.id;
+        _resumeToken = msg.resume;
         for (final p in msg.participants) {
           participants[p.id] = RemoteParticipant(p.id, p.name)
             ..mic = p.mic
@@ -255,6 +329,26 @@ class RoomClient extends ChangeNotifier {
           ..camera = p.camera;
         notifyListeners();
 
+      case SignalType.resumed:
+        // Back in the room. Catch up on who's here now: anyone who left
+        // while we were away goes, and everyone's state is current.
+        reconnecting = false;
+        final here = {for (final p in msg.participants) p.id: p};
+        for (final id in participants.keys.toList()) {
+          if (!here.containsKey(id)) await participants.remove(id)?._dispose();
+        }
+        for (final p in here.values) {
+          (participants[p.id] ??= RemoteParticipant(p.id, p.name))
+            ..name = p.name
+            ..mic = p.mic
+            ..camera = p.camera;
+        }
+        notifyListeners();
+        _sendState();
+        _sentLayout = '';
+        _sendLayout();
+        await _restartPublishIce();
+
       case SignalType.speakers:
         speaking = msg.speakers.toSet();
         notifyListeners();
@@ -308,8 +402,14 @@ class RoomClient extends ChangeNotifier {
         );
       };
       pc.onConnectionState = (s) {
-        if (s == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
-          _end('The connection failed');
+        // Media lost but signalling fine (the network changed): restart
+        // ICE on both connections rather than giving up. The server
+        // restarts the subscribe side when asked.
+        if (s == RTCPeerConnectionState.RTCPeerConnectionStateFailed &&
+            pcName == PeerName.publish &&
+            !reconnecting) {
+          _send(const SignalMessage(type: SignalType.restartIce));
+          _restartPublishIce();
         }
         if (pcName == PeerName.publish &&
             s == RTCPeerConnectionState.RTCPeerConnectionStateConnected &&
@@ -522,7 +622,8 @@ class RoomClient extends ChangeNotifier {
     notifyListeners();
 
     await _wsSub?.cancel();
-    await _ws?.sink.close();
+    // A normal close tells the server we left on purpose.
+    await _ws?.sink.close(ws_status.normalClosure);
     await _pub?.close();
     await _sub?.close();
     for (final t in localStream.getTracks()) {

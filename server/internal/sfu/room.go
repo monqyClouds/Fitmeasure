@@ -75,15 +75,71 @@ type Rooms struct {
 	// and only tile sizes count.
 	SubscriberAPI func() (*webrtc.API, <-chan cc.BandwidthEstimator, error)
 
+	// ResumeGrace is how long someone whose WebSocket dropped (rather than
+	// closed) stays in the room, waiting to reconnect: a phone moving from
+	// Wi-Fi to 4G loses its connections. 0 means DefaultResumeGrace.
+	ResumeGrace time.Duration
+
 	// testBudget, in tests, replaces the estimate for a participant (by
 	// name), in bit/s.
 	testBudget func(name string) func() int
 
-	mu    sync.Mutex // guards rooms and every room's membership; taken before room.mu
-	rooms map[string]*room
+	mu     sync.Mutex // guards rooms, tokens and every room's membership; taken before room.mu
+	rooms  map[string]*room
+	tokens map[string]*participant // resume tokens
+}
+
+// DefaultResumeGrace is long enough for a phone to change networks.
+const DefaultResumeGrace = 20 * time.Second
+
+func (rs *Rooms) resumeGrace() time.Duration {
+	if rs.ResumeGrace > 0 {
+		return rs.ResumeGrace
+	}
+	return DefaultResumeGrace
+}
+
+// resume hands a reconnected WebSocket to the participant whose token it
+// carries, if they're still waiting in the room.
+func (rs *Rooms) resume(w http.ResponseWriter, r *http.Request, token string) {
+	rs.mu.Lock()
+	p := rs.tokens[token]
+	rs.mu.Unlock()
+
+	ws, err := rs.Upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	conn := signal.NewConn(ws)
+	if p == nil {
+		_ = conn.Send(signal.Message{Type: signal.TypeError, Error: "session expired"})
+		conn.Close()
+		return
+	}
+	old := p.getConn()
+	select {
+	case p.resumeCh <- conn:
+		// If the old connection hasn't noticed it's dead yet (a phone that
+		// switched networks leaves it hanging until pings time out), end
+		// its read loop now so the new one takes over.
+		old.Close()
+	default:
+		_ = conn.Send(signal.Message{Type: signal.TypeError, Error: "already resuming"})
+		conn.Close()
+	}
+}
+
+// deliberateLeave reports whether the WebSocket was closed by the client on
+// purpose, rather than dropped.
+func deliberateLeave(err error) bool {
+	return websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived)
 }
 
 func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if token := r.URL.Query().Get("resume"); token != "" {
+		rs.resume(w, r, token)
+		return
+	}
 	roomName := r.PathValue("room")
 	if !roomNamePattern.MatchString(roomName) {
 		http.Error(w, "room names are 1 to 40 lowercase letters, digits or dashes", http.StatusBadRequest)
@@ -102,7 +158,6 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return // Upgrade has already replied with an HTTP error.
 	}
 	conn := signal.NewConn(ws)
-	defer conn.Close()
 
 	id := newID()
 	log := rs.Log.With("room", roomName, "participant", id, "name", name, "remote", r.RemoteAddr)
@@ -118,8 +173,10 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Error("room: create peer connections", "err", err)
 		_ = conn.Send(signal.Message{Type: signal.TypeError, Error: "server error"})
+		conn.Close()
 		return
 	}
+	defer func() { p.getConn().Close() }()
 
 	rm, others, tracks, err := rs.join(roomName, p)
 	if err != nil {
@@ -165,22 +222,45 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 
-	welcome := signal.Message{Type: signal.TypeWelcome, ID: p.id, Participants: others}
-	if rs.ClientICEServers != nil {
-		if welcome.ICEServers, err = rs.ClientICEServers(p.id); err != nil {
-			log.Error("room: mint TURN credentials", "err", err)
-		}
-	}
+	welcome := signal.Message{Type: signal.TypeWelcome, ID: p.id, Participants: others, Resume: p.token}
+	welcome.ICEServers = rs.clientICEServers(p, log)
 	self := p.info()
-	_ = conn.Send(welcome)
+	_ = p.send(welcome)
 	broadcast(rm.others(p), signal.Message{Type: signal.TypeParticipantJoined, Participant: &self})
 	for _, t := range tracks {
 		p.subscribe(t)
 	}
 
-	if err := p.signal(); err != nil {
-		log.Info("room: left", "reason", err)
+	// Handle p's messages. If the WebSocket drops rather than closes, p
+	// stays in the room for the grace period, in case they reconnect.
+	for {
+		err := p.signal()
+		if deliberateLeave(err) {
+			log.Info("room: left", "reason", err)
+			return
+		}
+		log.Info("room: connection lost, waiting for a resume", "reason", err)
+		select {
+		case c := <-p.resumeCh:
+			p.setConn(c)
+			log.Info("room: resumed")
+			p.resumed(rs.clientICEServers(p, log))
+		case <-time.After(rs.resumeGrace()):
+			log.Info("room: left", "reason", "didn't resume in time")
+			return
+		}
 	}
+}
+
+func (rs *Rooms) clientICEServers(p *participant, log *slog.Logger) []webrtc.ICEServer {
+	if rs.ClientICEServers == nil {
+		return nil
+	}
+	servers, err := rs.ClientICEServers(p.id)
+	if err != nil {
+		log.Error("room: mint TURN credentials", "err", err)
+	}
+	return servers
 }
 
 // join adds p to the named room, creating it if needed. It returns the people
@@ -217,6 +297,10 @@ func (rs *Rooms) join(roomName string, p *participant) (*room, []signal.Particip
 		tracks = append(tracks, t)
 	}
 	rm.participants[p.id] = p
+	if rs.tokens == nil {
+		rs.tokens = make(map[string]*participant)
+	}
+	rs.tokens[p.token] = p
 	return rm, others, tracks, nil
 }
 
@@ -226,6 +310,7 @@ func (rs *Rooms) leave(rm *room, p *participant) {
 	p.close()
 
 	rs.mu.Lock()
+	delete(rs.tokens, p.token)
 	rm.mu.Lock()
 	delete(rm.participants, p.id)
 	var published []*upTrack
@@ -341,7 +426,7 @@ func (rm *room) unpublish(t *upTrack) {
 
 func broadcast(to []*participant, m signal.Message) {
 	for _, q := range to {
-		_ = q.conn.Send(m)
+		_ = q.send(m)
 	}
 }
 
@@ -349,25 +434,27 @@ func broadcast(to []*participant, m signal.Message) {
 // two peer connections.
 type participant struct {
 	id, name string
-	conn     *signal.Conn
-	pub      *webrtc.PeerConnection // their camera and mic, in
-	sub      *webrtc.PeerConnection // everyone else's, out
+	token    string                      // secret, for resuming after a dropped WebSocket
+	conn     atomic.Pointer[signal.Conn] // the current WebSocket; replaced on resume
+	resumeCh chan *signal.Conn           // a reconnected WebSocket, from Rooms.resume
+	pub      *webrtc.PeerConnection      // their camera and mic, in
+	sub      *webrtc.PeerConnection      // everyone else's, out
 	log      *slog.Logger
+	lastLoud atomic.Int64 // UnixNano of their last packet louder than speakingLevel
 
-	mu          sync.Mutex
-	closed      bool
-	downs       map[*upTrack]*downTrack          // what sub is sending them
-	published   map[*webrtc.RTPReceiver]*upTrack // what pub is receiving from them
-	liveLayers  map[*upTrack]int                 // layers still arriving, per published track
-	tiles       map[string]signal.Tile           // their layout, by participant ID
-	probe       prober                           // bandwidth probing, used by allocateLoop only
-	room        *room                            // set once joined
-	mic, camera bool                             // as they last reported
-
-	lastLoud      atomic.Int64 // UnixNano of their last packet louder than speakingLevel
-	haveLayout    bool         // whether they've sent one
-	offerInFlight bool         // a subscribe offer awaits its answer
-	offerAgain    bool         // tracks changed meanwhile; offer again after the answer
+	mu            sync.Mutex
+	closed        bool
+	downs         map[*upTrack]*downTrack          // what sub is sending them
+	published     map[*webrtc.RTPReceiver]*upTrack // what pub is receiving from them
+	liveLayers    map[*upTrack]int                 // layers still arriving, per published track
+	tiles         map[string]signal.Tile           // their layout, by participant ID
+	haveLayout    bool                             // whether they've sent one
+	probe         prober                           // bandwidth probing, used by allocateLoop only
+	room          *room                            // set once joined
+	mic, camera   bool                             // as they last reported
+	offerInFlight bool                             // a subscribe offer awaits its answer
+	offerAgain    bool                             // tracks changed meanwhile; offer again after the answer
+	iceRestart    bool                             // the next subscribe offer restarts ICE
 }
 
 func newParticipant(pubAPI, subAPI *webrtc.API, iceServers []webrtc.ICEServer, id, name string, conn *signal.Conn, log *slog.Logger) (*participant, error) {
@@ -382,13 +469,15 @@ func newParticipant(pubAPI, subAPI *webrtc.API, iceServers []webrtc.ICEServer, i
 		return nil, err
 	}
 	p := &participant{
-		id: id, name: name, conn: conn, pub: pub, sub: sub, log: log,
+		id: id, name: name, token: newToken(), resumeCh: make(chan *signal.Conn, 1),
+		pub: pub, sub: sub, log: log,
 		downs:      make(map[*upTrack]*downTrack),
 		published:  make(map[*webrtc.RTPReceiver]*upTrack),
 		liveLayers: make(map[*upTrack]int),
 		mic:        true,
 		camera:     true,
 	}
+	p.conn.Store(conn)
 
 	for pcName, pc := range map[string]*webrtc.PeerConnection{signal.PCPublish: pub, signal.PCSubscribe: sub} {
 		pc.OnICECandidate(func(c *webrtc.ICECandidate) {
@@ -396,13 +485,12 @@ func newParticipant(pubAPI, subAPI *webrtc.API, iceServers []webrtc.ICEServer, i
 				return // Gathering finished.
 			}
 			init := c.ToJSON()
-			_ = conn.Send(signal.Message{Type: signal.TypeCandidate, PC: pcName, Candidate: &init})
+			_ = p.send(signal.Message{Type: signal.TypeCandidate, PC: pcName, Candidate: &init})
 		})
 		pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+			// A failed connection is left for the client to restart (ICE
+			// restart); if the client is gone too, its WebSocket goes.
 			log.Info("room: connection state", "pc", pcName, "state", s.String())
-			if s == webrtc.PeerConnectionStateFailed {
-				conn.Close() // Unblocks Receive in signal, which leaves the room.
-			}
 		})
 	}
 	return p, nil
@@ -494,6 +582,48 @@ func (p *participant) unsubscribe(t *upTrack) {
 	if err != nil {
 		p.log.Warn("room: remove track", "err", err)
 	}
+	p.negotiate()
+}
+
+// send writes a message to p's current WebSocket.
+func (p *participant) send(m signal.Message) error {
+	return p.getConn().Send(m)
+}
+
+func (p *participant) getConn() *signal.Conn { return p.conn.Load() }
+
+// setConn switches p to a reconnected WebSocket.
+func (p *participant) setConn(c *signal.Conn) {
+	if old := p.conn.Swap(c); old != nil && old != c {
+		old.Close()
+	}
+}
+
+// restartICE renegotiates the subscribe connection with new ICE
+// credentials, after an offer in flight if there is one.
+func (p *participant) restartICE() {
+	p.mu.Lock()
+	p.iceRestart = true
+	p.mu.Unlock()
+	p.negotiate()
+}
+
+// resumed brings p back after reconnecting: the room as it is now (they may
+// have missed joins, leaves and offers), then an ICE restart on the
+// subscribe connection. The client restarts ICE on the publish connection.
+func (p *participant) resumed(iceServers []webrtc.ICEServer) {
+	var others []signal.Participant
+	if p.room != nil {
+		for _, q := range p.room.others(p) {
+			others = append(others, q.info())
+		}
+	}
+	_ = p.send(signal.Message{Type: signal.TypeResumed, ID: p.id, Participants: others, ICEServers: iceServers, Resume: p.token})
+
+	// Any offer sent while the WebSocket was down was lost.
+	p.mu.Lock()
+	p.offerInFlight, p.offerAgain, p.iceRestart = false, false, true
+	p.mu.Unlock()
 	p.negotiate()
 }
 
@@ -592,7 +722,7 @@ func (p *participant) allocateLoop(budget func() int) {
 		p.allocate(bitrate-audio*audioBitrate, video, now)
 		if now.Sub(told) >= 2*time.Second {
 			told = now
-			_ = p.conn.Send(signal.Message{Type: signal.TypeEstimate, Bitrate: bitrate})
+			_ = p.send(signal.Message{Type: signal.TypeEstimate, Bitrate: bitrate})
 		}
 	}
 }
@@ -749,17 +879,24 @@ func (p *participant) negotiate() {
 		p.offerAgain = true
 		return
 	}
-	offer, err := p.sub.CreateOffer(nil)
+	var opts *webrtc.OfferOptions
+	if p.iceRestart {
+		// New ICE credentials: the client gathers fresh candidates, from
+		// whatever network it's on now.
+		opts = &webrtc.OfferOptions{ICERestart: true}
+		p.iceRestart = false
+	}
+	offer, err := p.sub.CreateOffer(opts)
 	if err == nil {
 		err = p.sub.SetLocalDescription(offer)
 	}
 	if err != nil {
 		p.log.Error("room: create subscribe offer", "err", err)
-		p.conn.Close()
+		p.getConn().Close()
 		return
 	}
 	p.offerInFlight = true
-	_ = p.conn.Send(signal.Message{Type: signal.TypeOffer, PC: signal.PCSubscribe, SDP: offer.SDP})
+	_ = p.send(signal.Message{Type: signal.TypeOffer, PC: signal.PCSubscribe, SDP: offer.SDP})
 }
 
 // handleAnswer applies the client's answer to our subscribe offer.
@@ -795,6 +932,7 @@ func (p *participant) handleAnswer(sdp string) error {
 
 // signal handles p's signalling messages until the WebSocket closes.
 func (p *participant) signal() error {
+	conn := p.getConn()
 	// Candidates can arrive before the matching description is applied.
 	pending := map[string][]webrtc.ICECandidateInit{}
 	pcs := map[string]*webrtc.PeerConnection{signal.PCPublish: p.pub, signal.PCSubscribe: p.sub}
@@ -807,11 +945,11 @@ func (p *participant) signal() error {
 		delete(pending, name)
 	}
 	sendError := func(text string) {
-		_ = p.conn.Send(signal.Message{Type: signal.TypeError, Error: text})
+		_ = conn.Send(signal.Message{Type: signal.TypeError, Error: text})
 	}
 
 	for {
-		msg, err := p.conn.Receive()
+		msg, err := conn.Receive()
 		if err != nil {
 			if errors.Is(err, signal.ErrBadMessage) {
 				sendError(err.Error())
@@ -834,7 +972,7 @@ func (p *participant) signal() error {
 				return err
 			}
 			addPending(signal.PCPublish)
-			if err := p.conn.Send(signal.Message{Type: signal.TypeAnswer, PC: signal.PCPublish, SDP: answer}); err != nil {
+			if err := conn.Send(signal.Message{Type: signal.TypeAnswer, PC: signal.PCPublish, SDP: answer}); err != nil {
 				return err
 			}
 
@@ -854,6 +992,9 @@ func (p *participant) signal() error {
 
 		case signal.TypeState:
 			p.setState(msg.Mic, msg.Camera)
+
+		case signal.TypeRestartICE:
+			p.restartICE()
 
 		case signal.TypeCandidate:
 			pc := pcs[msg.PC]
@@ -876,6 +1017,13 @@ func (p *participant) signal() error {
 			sendError("unknown message type " + msg.Type)
 		}
 	}
+}
+
+// newToken returns a resume token: long and random, since it's a secret.
+func newToken() string {
+	b := make([]byte, 24)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // newID returns a short random participant ID.

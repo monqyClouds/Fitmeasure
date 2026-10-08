@@ -74,7 +74,8 @@ function describeSDP(sdp) {
 }
 
 function send(message) {
-  ws.send(JSON.stringify(message));
+  // While reconnecting there's no socket; the server catches up after.
+  if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
 }
 
 function nameOf(id) {
@@ -184,30 +185,72 @@ async function join(event) {
       audio: withAudio ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true } : false,
     });
 
-    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${scheme}://${location.host}/ws/rooms/${encodeURIComponent(room)}?name=${encodeURIComponent(name)}`);
-    await new Promise((resolve, reject) => {
-      ws.onopen = resolve;
-      ws.onerror = () => reject(new Error('WebSocket failed to open'));
-    });
+    roomUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/rooms/${encodeURIComponent(room)}`;
+    await openSocket(`${roomUrl}?name=${encodeURIComponent(name)}`);
     log(`Signalling WebSocket open, joining room "${room}"`);
-
-    // Messages are handled one at a time, in order: a candidate must not be
-    // applied before the offer it belongs to.
-    let queue = Promise.resolve();
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      queue = queue.then(() => handle(msg)).catch((err) => log(`Error: ${err.message}`, 'bad'));
-    };
-    ws.onclose = () => {
-      log('Signalling WebSocket closed');
-      leave();
-    };
     $('stop').disabled = false;
   } catch (err) {
     log(`Error: ${err.message}`, 'bad');
     leave();
   }
+}
+
+// Messages are handled one at a time, in order: a candidate must not be
+// applied before the offer it belongs to.
+let queue = Promise.resolve();
+let roomUrl = null;
+let resumeToken = null; // from the welcome: lets us back in after a drop
+
+// openSocket connects the signalling WebSocket. If it drops (rather than us
+// leaving), we reconnect with the resume token; the server keeps our place
+// for 20 seconds, so a phone changing networks doesn't leave the room.
+async function openSocket(url) {
+  const socket = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    socket.onopen = resolve;
+    socket.onerror = () => reject(new Error('WebSocket failed to open'));
+  });
+  ws = socket;
+  socket.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    queue = queue.then(() => handle(msg)).catch((err) => log(`Error: ${err.message}`, 'bad'));
+  };
+  socket.onclose = () => {
+    if (ws !== socket) return;
+    if (!resumeToken || !pcs) {
+      log('Signalling WebSocket closed');
+      leave();
+      return;
+    }
+    reconnect();
+  };
+}
+
+async function reconnect() {
+  log('Connection lost, reconnecting…', 'bad');
+  ws = null;
+  const until = Date.now() + 20_000;
+  while (pcs && Date.now() < until) {
+    try {
+      await openSocket(`${roomUrl}?resume=${resumeToken}`);
+      log('Reconnected; waiting for the server');
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  if (pcs) {
+    log("Couldn't reconnect in time", 'bad');
+    leave();
+  }
+}
+
+// restartPublishICE gathers new candidates for our sending connection, as
+// after changing networks; the server answers the new offer.
+async function restartPublishICE() {
+  const offer = await pcs.publish.createOffer({ iceRestart: true });
+  await pcs.publish.setLocalDescription(offer);
+  send({ type: 'offer', pc: 'publish', sdp: offer.sdp });
 }
 
 // Both peer connections are made once the welcome brings the STUN and TURN
@@ -234,7 +277,14 @@ function createPeerConnections(iceServers) {
       const state = pc.connectionState;
       log(`${pcName} connection: ${state}`, state === 'connected' ? 'good' : state === 'failed' ? 'bad' : '');
       if (state === 'connected') startStats();
-      if (state === 'failed') leave();
+      // Media lost but signalling fine (say the network changed): restart
+      // ICE on both connections rather than giving up. The server restarts
+      // the subscribe side when asked.
+      if (state === 'failed' && ws && pcName === 'publish') {
+        log('Media connection failed; restarting ICE', 'bad');
+        send({ type: 'restart_ice' });
+        restartPublishICE().catch((err) => log(`ICE restart: ${err.message}`, 'bad'));
+      }
     };
   }
 
@@ -253,6 +303,7 @@ async function handle(msg) {
   switch (msg.type) {
     case 'welcome': {
       me = msg.id;
+      resumeToken = msg.resume;
       names.set(me, $('name').value.trim());
       for (const p of msg.participants ?? []) {
         names.set(p.id, p.name);
@@ -313,6 +364,28 @@ async function handle(msg) {
       removeTile(msg.participant.id);
       names.delete(msg.participant.id);
       break;
+    case 'resumed': {
+      // Back in the room. Catch up on who's here now: anyone who left while
+      // we were away goes, and their state is current.
+      const here = new Set((msg.participants ?? []).map((p) => p.id));
+      for (const p of msg.participants ?? []) {
+        names.set(p.id, p.name);
+        states.set(p.id, { mic: p.mic, camera: p.camera });
+        renderCaption(p.id);
+      }
+      for (const id of [...tiles.keys()]) {
+        if (id !== me && !here.has(id)) {
+          removeTile(id);
+          names.delete(id);
+        }
+      }
+      log('Back in the room; restarting ICE', 'good');
+      sendState();
+      lastLayout = '';
+      sendLayout();
+      await restartPublishICE();
+      break;
+    }
     case 'participant_changed': {
       const p = msg.participant;
       const before = states.get(p.id);
@@ -389,9 +462,10 @@ function leave() {
     pcs = null;
     log('Left the room');
   }
+  resumeToken = null;
   if (ws) {
     ws.onclose = null;
-    ws.close();
+    ws.close(1000); // a deliberate leave, not a dropped connection
     ws = null;
   }
   for (const id of [...tiles.keys()]) removeTile(id);

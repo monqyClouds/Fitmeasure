@@ -11,7 +11,7 @@ scratch on [Pion](https://github.com/pion/webrtc), in the stages described in
 | S3. Real networks: TURN, deployment, the Android app | built; the 30-minute phone-on-4G test is still to do |
 | S4. Simulcast | ✅ (see the notes below on switching down) |
 | S5. Bandwidth estimation | built; needs testing on real devices (see below) |
-| S6. Session features | |
+| S6. Session features | in progress: speaking indicators, mic/camera state and reconnecting are done; moderation next |
 
 ## Run it
 
@@ -284,4 +284,18 @@ web/static/              plain JavaScript test pages for the stages
   test: a phone on weak 4G and a laptop on good Wi-Fi watching the same
   person. The server log's `room: cap` and `room: probing` lines show what
   each viewer gets and why.
+- **Speaking indicators** (stage 6). Publishers put each audio packet's
+  loudness in a header extension (RFC 6464); the server reads it without
+  decoding any audio, and a loop per room tells everyone who is speaking
+  when that changes. Clients report their mic and camera (`state`), and the
+  server stops forwarding video from a camera that's off.
+- **Surviving a network change.** A phone moving between Wi-Fi and 4G loses
+  its WebSocket (a TCP connection on the old network) and its media paths.
+  The welcome carries a secret resume token. If the WebSocket drops rather
+  than closes, the server keeps the person in the room for 20 seconds
+  (`ResumeGrace`); reconnecting with `?resume=<token>` puts them back without
+  anyone seeing them leave, and both peer connections restart ICE (new
+  credentials, so candidates are gathered from the new network). A normal
+  close (the Leave button, closing the tab) still leaves at once. On the
+  Android emulator, switching Wi-Fi off recovers in about two seconds.
 

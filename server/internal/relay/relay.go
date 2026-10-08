@@ -79,18 +79,11 @@ func Start(cfg Config) (*Server, error) {
 	}
 	secret := hex.EncodeToString(secretBytes)
 
-	addr := net.JoinHostPort("", strconv.Itoa(cfg.Port))
-	udp, err := net.ListenPacket("udp4", addr)
+	udp, tcp, err := listen(cfg.Port)
 	if err != nil {
-		return nil, fmt.Errorf("relay: listen UDP %s: %w", addr, err)
+		return nil, err
 	}
 	cfg.Port = udp.LocalAddr().(*net.UDPAddr).Port // in case it was 0
-	addr = net.JoinHostPort("", strconv.Itoa(cfg.Port))
-	tcp, err := net.Listen("tcp4", addr)
-	if err != nil {
-		udp.Close()
-		return nil, fmt.Errorf("relay: listen TCP %s: %w", addr, err)
-	}
 
 	relayAddrs := func() turn.RelayAddressGenerator {
 		return &turn.RelayAddressGeneratorPortRange{
@@ -123,6 +116,27 @@ func Start(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("relay: %w", err)
 	}
 	return &Server{cfg: cfg, secret: secret, turn: srv}, nil
+}
+
+// listen opens UDP and TCP on the same port. For port 0 it picks a free UDP
+// port and tries again if TCP happens to be taken there.
+func listen(port int) (net.PacketConn, net.Listener, error) {
+	for attempt := 0; ; attempt++ {
+		addr := net.JoinHostPort("", strconv.Itoa(port))
+		udp, err := net.ListenPacket("udp4", addr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("relay: listen UDP %s: %w", addr, err)
+		}
+		addr = net.JoinHostPort("", strconv.Itoa(udp.LocalAddr().(*net.UDPAddr).Port))
+		tcp, err := net.Listen("tcp4", addr)
+		if err == nil {
+			return udp, tcp, nil
+		}
+		udp.Close()
+		if port != 0 || attempt == 9 {
+			return nil, nil, fmt.Errorf("relay: listen TCP %s: %w", addr, err)
+		}
+	}
 }
 
 // Port is the UDP and TCP port the server listens on.

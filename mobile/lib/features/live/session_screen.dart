@@ -153,6 +153,7 @@ class _TopBar extends StatelessWidget {
     final count = client.participants.length + 1;
     final link = client.link;
     final (color, label) = switch (client.state) {
+      _ when client.reconnecting => (const Color(0xFFFFB547), 'Reconnecting…'),
       RoomState.connecting => (AppColors.textTertiary, 'Connecting'),
       _ when link.relayed => (const Color(0xFFFFB547), 'Relayed'),
       _ => (const Color(0xFF3DD6C6), 'Connected'),
@@ -495,7 +496,7 @@ class _Alone extends StatelessWidget {
               ),
             const SizedBox(height: 20),
             Text(
-              connecting ? 'Joining…' : "You're the first one here",
+              connecting ? 'Joining…' : "You're the only one here",
               style: t.titleLarge,
               textAlign: TextAlign.center,
             ),
