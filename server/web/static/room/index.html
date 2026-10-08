@@ -27,6 +27,18 @@
       <button id="stop" type="button" disabled>Leave</button>
     </form>
 
+    <div id="room-options" class="controls" hidden>
+      <label id="lock-option"><input type="checkbox" id="lock"> Lock room</label>
+      <label id="everyone-option"><input type="checkbox" id="everyone"> Everyone can moderate</label>
+      <label title="Your video goes to the host alone; everyone still hears you"><input type="checkbox" id="trainer-only"> Only the host sees my video</label>
+    </div>
+
+    <div id="prompt" class="prompt" hidden>
+      <span id="prompt-text"></span>
+      <button id="prompt-yes" type="button">Unmute</button>
+      <button id="prompt-no" type="button" class="toggle">Not now</button>
+    </div>
+
     <div id="tiles" class="videos"></div>
 
     <section>

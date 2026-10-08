@@ -16,7 +16,9 @@ let statsTimer = null;
 let lastBytes = null;
 let subscribeOffers = 0;
 const names = new Map(); // participant ID → name
-const states = new Map(); // participant ID → { mic, camera }, as they report
+const states = new Map(); // participant ID → { mic, camera, role, visibility }
+let myRole = 'participant';
+let settings = { locked: false, everyoneCanModerate: false };
 let speakers = new Set(); // participant IDs speaking now, from the server
 const tiles = new Map(); // participant ID → { figure, video, caption }
 
@@ -98,6 +100,17 @@ function ensureTile(id) {
   figure.append(video, avatar, caption);
   $('tiles').append(figure);
   if (id !== me) {
+    // The moderation menu, for the actions our role allows.
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'more';
+    more.textContent = '⋯';
+    more.title = 'Moderate';
+    more.onclick = (e) => {
+      e.stopPropagation();
+      openMenu(id, more);
+    };
+    figure.append(more);
     // Click a tile to make it large (pin it), again to shrink it. The
     // server switches its layer to match.
     figure.title = 'Click to enlarge';
@@ -123,6 +136,16 @@ function renderCaption(id) {
   const state = states.get(id) ?? { mic: true, camera: true };
   tile.caption.textContent = id === me ? `${nameOf(id)} (you)` : nameOf(id);
   if (!state.mic) tile.caption.insertAdjacentHTML('afterbegin', micOffIcon + ' ');
+  const role = id === me ? myRole : state.role;
+  const badges = [role === 'host' ? 'host' : role === 'moderator' ? 'moderator' : '', state.visibility === 'trainer_only' ? 'trainer only' : '']
+    .filter(Boolean);
+  if (badges.length) {
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = badges.join(' · ');
+    tile.caption.append(' ', badge);
+  }
+  tile.figure.classList.toggle('can-moderate', id !== me && canModerate());
   tile.figure.classList.toggle('camera-off', !state.camera);
   tile.figure.classList.toggle('speaking', speakers.has(id));
   tile.avatar.textContent = (nameOf(id).trim()[0] ?? '?').toUpperCase();
@@ -304,12 +327,16 @@ async function handle(msg) {
     case 'welcome': {
       me = msg.id;
       resumeToken = msg.resume;
+      myRole = msg.participant?.role ?? 'participant';
+      applySettings(msg);
       names.set(me, $('name').value.trim());
       for (const p of msg.participants ?? []) {
         names.set(p.id, p.name);
-        states.set(p.id, { mic: p.mic, camera: p.camera });
+        states.set(p.id, { mic: p.mic, camera: p.camera, role: p.role, visibility: p.visibility });
       }
-      states.set(me, { mic: micOn(), camera: true });
+      states.set(me, { mic: micOn(), camera: true, role: myRole, visibility: 'everyone' });
+      $('room-options').hidden = false;
+      if (myRole === 'host') log("You're the host: you can mute, remove and promote people from each tile's ⋯ menu", 'good');
       sendState();
       $('mic').hidden = $('cam').hidden = false;
       renderToggles();
@@ -355,7 +382,10 @@ async function handle(msg) {
       break;
     case 'participant_joined':
       names.set(msg.participant.id, msg.participant.name);
-      states.set(msg.participant.id, { mic: msg.participant.mic, camera: msg.participant.camera });
+      states.set(msg.participant.id, {
+        mic: msg.participant.mic, camera: msg.participant.camera,
+        role: msg.participant.role, visibility: msg.participant.visibility,
+      });
       renderCaption(msg.participant.id);
       log(`${msg.participant.name} joined`, 'good');
       break;
@@ -368,9 +398,11 @@ async function handle(msg) {
       // Back in the room. Catch up on who's here now: anyone who left while
       // we were away goes, and their state is current.
       const here = new Set((msg.participants ?? []).map((p) => p.id));
+      myRole = msg.participant?.role ?? myRole;
+      applySettings(msg);
       for (const p of msg.participants ?? []) {
         names.set(p.id, p.name);
-        states.set(p.id, { mic: p.mic, camera: p.camera });
+        states.set(p.id, { mic: p.mic, camera: p.camera, role: p.role, visibility: p.visibility });
         renderCaption(p.id);
       }
       for (const id of [...tiles.keys()]) {
@@ -389,12 +421,43 @@ async function handle(msg) {
     case 'participant_changed': {
       const p = msg.participant;
       const before = states.get(p.id);
-      states.set(p.id, { mic: p.mic, camera: p.camera });
+      if (p.id === me) {
+        // Our role changed (a promotion, or the host role passing to us).
+        if (p.role !== myRole) log(`You're now ${roleName(p.role)}`, 'good');
+        myRole = p.role;
+        states.set(me, { ...states.get(me), role: p.role });
+        renderRoomOptions();
+        tiles.forEach((_, id) => renderCaption(id));
+        break;
+      }
+      states.set(p.id, { mic: p.mic, camera: p.camera, role: p.role, visibility: p.visibility });
       renderCaption(p.id);
+      if (before && before.role !== p.role) log(`${p.name} is now ${roleName(p.role)}`);
       if (before && before.mic !== p.mic) log(`${p.name} ${p.mic ? 'unmuted' : 'muted'}`);
       if (before && before.camera !== p.camera) log(`${p.name} turned their camera ${p.camera ? 'on' : 'off'}`);
       break;
     }
+    case 'settings':
+      applySettings(msg);
+      log(`Room ${settings.locked ? 'locked' : 'unlocked'}; ${settings.everyoneCanModerate ? 'everyone' : 'only the host and moderators'} can moderate`, 'muted');
+      break;
+    case 'muted_by': {
+      // A moderator muted us. The server has already stopped forwarding;
+      // turn it off here too so our controls match. Only we can unmute.
+      const tracks = msg.track === 'mic' ? localStream?.getAudioTracks() : localStream?.getVideoTracks();
+      tracks?.forEach((t) => (t.enabled = false));
+      renderToggles();
+      sendState();
+      log(`${nameOf(msg.id)} turned off your ${msg.track === 'mic' ? 'microphone' : 'camera'}`, 'bad');
+      break;
+    }
+    case 'unmute_requested':
+      showUnmutePrompt(msg.id, msg.track);
+      break;
+    case 'removed':
+      log('You were removed from the room', 'bad');
+      resumeToken = null; // don't try to come back
+      break;
     case 'speakers': {
       // Everyone speaking now, including us; the tiles' outlines follow.
       const was = speakers;
@@ -409,6 +472,81 @@ async function handle(msg) {
       log(`Server error: ${msg.error}`, 'bad');
       break;
   }
+}
+
+function roleName(role) {
+  return role === 'host' ? 'the host' : role === 'moderator' ? 'a moderator' : 'a participant';
+}
+
+function canModerate() {
+  return myRole === 'host' || myRole === 'moderator' || settings.everyoneCanModerate;
+}
+
+function applySettings(msg) {
+  if (msg.locked !== undefined) settings.locked = msg.locked;
+  if (msg.everyoneCanModerate !== undefined) settings.everyoneCanModerate = msg.everyoneCanModerate;
+  renderRoomOptions();
+  tiles.forEach((_, id) => renderCaption(id));
+}
+
+function renderRoomOptions() {
+  $('lock').checked = settings.locked;
+  $('everyone').checked = settings.everyoneCanModerate;
+  $('lock-option').hidden = !(myRole === 'host' || myRole === 'moderator');
+  $('everyone-option').hidden = myRole !== 'host';
+}
+
+// The ⋯ menu on someone's tile: what our role lets us do to them. The
+// server checks every action again.
+function openMenu(id, anchor) {
+  document.querySelector('.menu')?.remove();
+  const state = states.get(id) ?? {};
+  const actions = [];
+  if (canModerate()) {
+    if (state.mic) actions.push(['Mute microphone', { type: 'mute', id, track: 'mic' }]);
+    else actions.push(['Ask to unmute', { type: 'request_unmute', id, track: 'mic' }]);
+    if (state.camera) actions.push(['Turn off camera', { type: 'mute', id, track: 'camera' }]);
+    else actions.push(['Ask to turn on camera', { type: 'request_unmute', id, track: 'camera' }]);
+  }
+  if (myRole === 'host') {
+    if (state.role === 'moderator') actions.push(['Remove as moderator', { type: 'set_role', id, role: 'participant' }]);
+    else actions.push(['Make moderator', { type: 'set_role', id, role: 'moderator' }]);
+    actions.push(['Make host', { type: 'transfer_host', id }]);
+  }
+  if (canModerate() && state.role !== 'host') actions.push(['Remove from room', { type: 'remove', id }]);
+  if (!actions.length) return;
+
+  const menu = document.createElement('div');
+  menu.className = 'menu';
+  for (const [label, message] of actions) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.textContent = label;
+    item.onclick = (e) => {
+      e.stopPropagation();
+      menu.remove();
+      send(message);
+      log(`${label}: ${nameOf(id)}`);
+    };
+    menu.append(item);
+  }
+  anchor.parentElement.append(menu);
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }));
+}
+
+function showUnmutePrompt(by, track) {
+  const what = track === 'mic' ? 'unmute' : 'turn on your camera';
+  $('prompt-text').textContent = `${nameOf(by)} asks you to ${what}.`;
+  $('prompt-yes').textContent = track === 'mic' ? 'Unmute' : 'Turn on camera';
+  $('prompt').hidden = false;
+  $('prompt-yes').onclick = () => {
+    $('prompt').hidden = true;
+    const tracks = track === 'mic' ? localStream?.getAudioTracks() : localStream?.getVideoTracks();
+    tracks?.forEach((t) => (t.enabled = true));
+    renderToggles();
+    sendState();
+  };
+  $('prompt-no').onclick = () => ($('prompt').hidden = true);
 }
 
 function micOn() {
@@ -473,6 +611,11 @@ function leave() {
   states.clear();
   speakers = new Set();
   $('mic').hidden = $('cam').hidden = true;
+  $('room-options').hidden = true;
+  $('prompt').hidden = true;
+  myRole = 'participant';
+  settings = { locked: false, everyoneCanModerate: false };
+  $('trainer-only').checked = false;
   me = null;
   $('stats').replaceChildren();
   $('start').disabled = false;
@@ -611,4 +754,13 @@ try { $('name').value = localStorage.getItem('fitmeasure-name') || ''; } catch {
 $('join').onsubmit = join;
 $('stop').onclick = leave;
 $('mic').onclick = () => toggle('mic');
+$('lock').onchange = () => send({ type: 'set_settings', locked: $('lock').checked });
+$('everyone').onchange = () => send({ type: 'set_settings', everyoneCanModerate: $('everyone').checked });
+$('trainer-only').onchange = () => {
+  const visibility = $('trainer-only').checked ? 'trainer_only' : 'everyone';
+  send({ type: 'state', visibility });
+  states.set(me, { ...states.get(me), visibility });
+  renderCaption(me);
+  log(visibility === 'trainer_only' ? 'Only the host sees your video now' : 'Everyone sees your video now');
+};
 $('cam').onclick = () => toggle('cam');

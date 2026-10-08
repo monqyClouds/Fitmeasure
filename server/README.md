@@ -11,7 +11,7 @@ scratch on [Pion](https://github.com/pion/webrtc), in the stages described in
 | S3. Real networks: TURN, deployment, the Android app | built; the 30-minute phone-on-4G test is still to do |
 | S4. Simulcast | ✅ (see the notes below on switching down) |
 | S5. Bandwidth estimation | built; needs testing on real devices (see below) |
-| S6. Session features | in progress: speaking indicators, mic/camera state and reconnecting are done; moderation next |
+| S6. Session features | built, with provisional roles (whoever opens a room hosts it); the 16-person hour is still to do |
 
 ## Run it
 
@@ -298,4 +298,14 @@ web/static/              plain JavaScript test pages for the stages
   credentials, so candidates are gathered from the new network). A normal
   close (the Leave button, closing the tab) still leaves at once. On the
   Android emulator, switching Wi-Fi off recovers in about two seconds.
+- **Moderation** (`moderation.go`), as in `docs/live-sessions.md` section 3.
+  Until there are accounts, whoever opens a room is its host. The host and
+  moderators can mute someone's mic or camera (forwarding stops at once and
+  the person's app mutes to match; only they can unmute), ask them to unmute,
+  remove them (never the host) and lock the room; the host also promotes
+  moderators, hands over host and turns on "everyone can moderate". Anyone
+  can choose "trainer only", so their video goes to the host alone. When the
+  host leaves, the longest-present moderator takes over, otherwise the
+  longest-present participant. Every action is checked on the server.
+  Without accounts, a removed person can rejoin under another name.
 

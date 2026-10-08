@@ -9,6 +9,13 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'live_protocol.dart';
 
+/// "the host", "a moderator", "a participant".
+String roleName(String role) => switch (role) {
+  Role.host => 'the host',
+  Role.moderator => 'a moderator',
+  _ => 'a participant',
+};
+
 /// The live sessions server. Override for a local server with
 /// `--dart-define=LIVE_SERVER=http://192.168.0.134:8282`.
 final liveServer = Uri.parse(
@@ -35,6 +42,31 @@ Future<bool> liveServerOnline() async {
 
 enum RoomState { connecting, live, ended }
 
+/// Something to tell the person in the room, for the screen to show.
+sealed class RoomNotice {
+  const RoomNotice();
+}
+
+/// A moderator turned off our mic or camera.
+class MutedNotice extends RoomNotice {
+  const MutedNotice(this.by, this.track);
+  final String by;
+  final String track;
+}
+
+/// A moderator asks us to unmute; only we can.
+class UnmuteRequest extends RoomNotice {
+  const UnmuteRequest(this.by, this.track);
+  final String by;
+  final String track;
+}
+
+/// A short message, e.g. "You're now the host".
+class InfoNotice extends RoomNotice {
+  const InfoNotice(this.text);
+  final String text;
+}
+
 /// Simulcast: the camera goes up as three layers at once, and the server
 /// sends each viewer the one that suits their tile. When the upload can't
 /// carry all three, the encoder stops the top layers by itself and resumes
@@ -57,6 +89,17 @@ class RemoteParticipant {
   String name;
   bool mic = true;
   bool camera = true;
+  String role = Role.participant;
+  String visibility = VideoVisibility.everyone;
+
+  void _update(LiveParticipant p) {
+    name = p.name;
+    mic = p.mic;
+    camera = p.camera;
+    role = p.role;
+    visibility = p.visibility;
+  }
+
   final renderer = RTCVideoRenderer();
   MediaStream? stream;
   bool hasVideo = false;
@@ -142,6 +185,20 @@ class RoomClient extends ChangeNotifier {
 
   /// Who is speaking now (participant IDs, ours included), from the server.
   Set<String> speaking = {};
+
+  /// Our role, and the room's settings.
+  String myRole = Role.participant;
+  String myVisibility = VideoVisibility.everyone;
+  bool locked = false;
+  bool everyoneCanModerate = false;
+
+  bool get canModerate =>
+      myRole == Role.host || myRole == Role.moderator || everyoneCanModerate;
+
+  final _notices = StreamController<RoomNotice>.broadcast();
+
+  /// Things to show: being muted, unmute requests, role changes.
+  Stream<RoomNotice> get notices => _notices.stream;
 
   bool get micOn => localStream.getAudioTracks().any((t) => t.enabled);
   bool get cameraOn => localStream.getVideoTracks().any((t) => t.enabled);
@@ -270,10 +327,18 @@ class RoomClient extends ChangeNotifier {
       case SignalType.welcome:
         myId = msg.id;
         _resumeToken = msg.resume;
+        myRole = msg.participant?.role ?? Role.participant;
+        _applySettings(msg);
         for (final p in msg.participants) {
-          participants[p.id] = RemoteParticipant(p.id, p.name)
-            ..mic = p.mic
-            ..camera = p.camera;
+          participants[p.id] = RemoteParticipant(p.id, p.name).._update(p);
+        }
+        if (myRole == Role.host) {
+          _notices.add(
+            const InfoNotice(
+              "You're the host: tap the people button to mute, remove or "
+              'promote people',
+            ),
+          );
         }
         _sendState();
         notifyListeners();
@@ -316,32 +381,55 @@ class RoomClient extends ChangeNotifier {
 
       case SignalType.participantJoined:
         final p = msg.participant!;
-        (participants[p.id] ??= RemoteParticipant(p.id, p.name))
-          ..name = p.name
-          ..mic = p.mic
-          ..camera = p.camera;
+        (participants[p.id] ??= RemoteParticipant(p.id, p.name))._update(p);
         notifyListeners();
 
       case SignalType.participantChanged:
         final p = msg.participant!;
-        participants[p.id]
-          ?..mic = p.mic
-          ..camera = p.camera;
+        if (p.id == myId) {
+          // Our role changed: a promotion, or the host role passing to us.
+          if (p.role != myRole) {
+            _notices.add(InfoNotice("You're now ${roleName(p.role)}"));
+          }
+          myRole = p.role;
+        } else {
+          final q = participants[p.id];
+          if (q != null && q.role != p.role) {
+            _notices.add(InfoNotice('${p.name} is now ${roleName(p.role)}'));
+          }
+          q?._update(p);
+        }
         notifyListeners();
+
+      case SignalType.settings:
+        _applySettings(msg);
+        notifyListeners();
+
+      case SignalType.mutedBy:
+        // The server has already stopped forwarding; turn it off here too
+        // so our controls match. Only we can turn it back on.
+        if (msg.track == 'mic') setMic(false);
+        if (msg.track == 'camera') setCamera(false);
+        _notices.add(MutedNotice(_nameOf(msg.id), msg.track ?? 'mic'));
+
+      case SignalType.unmuteRequested:
+        _notices.add(UnmuteRequest(_nameOf(msg.id), msg.track ?? 'mic'));
+
+      case SignalType.removed:
+        await _end('You were removed from the room');
 
       case SignalType.resumed:
         // Back in the room. Catch up on who's here now: anyone who left
         // while we were away goes, and everyone's state is current.
         reconnecting = false;
+        myRole = msg.participant?.role ?? myRole;
+        _applySettings(msg);
         final here = {for (final p in msg.participants) p.id: p};
         for (final id in participants.keys.toList()) {
           if (!here.containsKey(id)) await participants.remove(id)?._dispose();
         }
         for (final p in here.values) {
-          (participants[p.id] ??= RemoteParticipant(p.id, p.name))
-            ..name = p.name
-            ..mic = p.mic
-            ..camera = p.camera;
+          (participants[p.id] ??= RemoteParticipant(p.id, p.name))._update(p);
         }
         notifyListeners();
         _sendState();
@@ -593,6 +681,39 @@ class RoomClient extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _applySettings(SignalMessage m) {
+    locked = m.locked ?? locked;
+    everyoneCanModerate = m.everyoneCanModerate ?? everyoneCanModerate;
+  }
+
+  String _nameOf(String? id) => participants[id]?.name ?? 'Someone';
+
+  // Moderation. The server checks each against our role and replies with
+  // an error if it isn't allowed.
+  void mute(String id, String track) =>
+      _send(SignalMessage(type: SignalType.mute, id: id, track: track));
+  void requestUnmute(String id, String track) => _send(
+    SignalMessage(type: SignalType.requestUnmute, id: id, track: track),
+  );
+  void setRole(String id, String role) =>
+      _send(SignalMessage(type: SignalType.setRole, id: id, role: role));
+  void transferHost(String id) =>
+      _send(SignalMessage(type: SignalType.transferHost, id: id));
+  void remove(String id) =>
+      _send(SignalMessage(type: SignalType.remove, id: id));
+  void setLocked(bool on) =>
+      _send(SignalMessage(type: SignalType.setSettings, locked: on));
+  void setEveryoneCanModerate(bool on) => _send(
+    SignalMessage(type: SignalType.setSettings, everyoneCanModerate: on),
+  );
+
+  /// Shows our video to the host alone, or to everyone.
+  void setVisibility(String visibility) {
+    myVisibility = visibility;
+    _send(SignalMessage(type: SignalType.state, visibility: visibility));
+    notifyListeners();
+  }
+
   /// Tells everyone (through the server) whether our mic and camera are
   /// on. A disabled track still sends silence or black frames; the server
   /// stops forwarding video from a camera that's off.
@@ -618,6 +739,7 @@ class RoomClient extends ChangeNotifier {
     endReason = reason;
     state = RoomState.ended;
     _statsTimer?.cancel();
+    unawaited(_notices.close());
     _layoutTimer?.cancel();
     notifyListeners();
 

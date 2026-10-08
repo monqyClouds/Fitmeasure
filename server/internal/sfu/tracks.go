@@ -304,11 +304,13 @@ func (d *downTrack) retarget() {
 		return
 	}
 	if d.up.kind == webrtc.RTPCodecTypeAudio {
-		d.setTarget(layers[0].rid, true) // audio plays whatever the layout
+		// Audio plays whatever the layout, unless the mic is muted (by
+		// them or a moderator).
+		d.setTarget(layers[0].rid, d.up.owner.micOn())
 		return
 	}
-	if !d.up.owner.cameraOn() {
-		d.setTarget("", false) // camera off: the picture is black anyway
+	if !d.up.owner.videoFor(d.sub) {
+		d.setTarget("", false) // camera off, or shown to the host alone
 		return
 	}
 	width, height, haveTile := d.sub.tileSize(d.up.owner.id)

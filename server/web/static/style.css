@@ -81,6 +81,58 @@ video {
 .tile figcaption svg { vertical-align: -2px; color: var(--bad); }
 
 button.toggle { background: var(--surface-high); color: var(--text); }
+
+.tile figcaption .badge { color: var(--accent); font-size: 12px; margin-left: 4px; }
+
+/* The moderation menu on a tile. */
+.tile .more {
+  display: none;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 4px 12px;
+  border-radius: 10px;
+  background: rgb(12 13 17 / 0.7);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+}
+.tile.can-moderate .more { display: block; }
+.tile .menu {
+  position: absolute;
+  top: 44px;
+  right: 8px;
+  z-index: 2;
+  display: grid;
+  min-width: 190px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--surface-high);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+}
+.tile .menu button {
+  background: none;
+  color: var(--text);
+  font-weight: 500;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 10px;
+}
+.tile .menu button:hover { background: var(--outline); }
+
+.prompt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px 18px;
+  border-radius: 18px;
+  background: var(--surface-high);
+}
+.prompt[hidden] { display: none; }
+.controls[hidden] { display: none; }
+.prompt span { flex: 1; }
 button.toggle.off { background: var(--bad); color: #fff; }
 .tile figcaption {
   position: absolute;

@@ -111,6 +111,36 @@ void main() {
     expect(resumed.participants.single.mic, isFalse);
   });
 
+  test('moderation messages', () {
+    expect(
+      const SignalMessage(
+        type: SignalType.mute,
+        id: 'p1',
+        track: 'mic',
+      ).encode(),
+      '{"type":"mute","id":"p1","track":"mic"}',
+    );
+    expect(
+      const SignalMessage(type: SignalType.setSettings, locked: true).encode(),
+      '{"type":"set_settings","locked":true}',
+    );
+    final p = SignalMessage.decode(
+      '{"type": "participant_changed", "participant": {"id": "p1", "name": "Ada", '
+      '"mic": true, "camera": true, "role": "moderator", "visibility": "trainer_only"}}',
+    ).participant!;
+    expect(p.role, Role.moderator);
+    expect(p.visibility, VideoVisibility.trainerOnly);
+    final muted = SignalMessage.decode(
+      '{"type": "muted_by", "id": "p2", "track": "camera"}',
+    );
+    expect(muted.track, 'camera');
+    final settings = SignalMessage.decode(
+      '{"type": "settings", "locked": true, "everyoneCanModerate": false}',
+    );
+    expect(settings.locked, isTrue);
+    expect(settings.everyoneCanModerate, isFalse);
+  });
+
   test('encodes a layout', () {
     expect(
       const SignalMessage(

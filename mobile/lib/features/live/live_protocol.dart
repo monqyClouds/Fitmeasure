@@ -41,6 +41,32 @@ abstract final class SignalType {
   /// Client to server: our media paths failed; restart ICE on the
   /// subscribe connection.
   static const restartIce = 'restart_ice';
+
+  // Moderation (docs/live-sessions.md section 3). The server checks each
+  // against the sender's role.
+  static const setRole = 'set_role';
+  static const transferHost = 'transfer_host';
+  static const mute = 'mute';
+  static const requestUnmute = 'request_unmute';
+  static const remove = 'remove';
+  static const setSettings = 'set_settings';
+  static const mutedBy = 'muted_by';
+  static const unmuteRequested = 'unmute_requested';
+  static const removed = 'removed';
+  static const settings = 'settings';
+}
+
+abstract final class Role {
+  static const host = 'host';
+  static const moderator = 'moderator';
+  static const participant = 'participant';
+}
+
+abstract final class VideoVisibility {
+  static const everyone = 'everyone';
+
+  /// Video to the host alone; everyone still hears you.
+  static const trainerOnly = 'trainer_only';
 }
 
 abstract final class PeerName {
@@ -54,6 +80,8 @@ class LiveParticipant {
     required this.name,
     this.mic = true,
     this.camera = true,
+    this.role = Role.participant,
+    this.visibility = VideoVisibility.everyone,
   });
 
   factory LiveParticipant.fromJson(Map<String, dynamic> json) =>
@@ -62,12 +90,16 @@ class LiveParticipant {
         name: json['name'] as String,
         mic: json['mic'] as bool? ?? true,
         camera: json['camera'] as bool? ?? true,
+        role: json['role'] as String? ?? Role.participant,
+        visibility: json['visibility'] as String? ?? VideoVisibility.everyone,
       );
 
   final String id;
   final String name;
   final bool mic;
   final bool camera;
+  final String role;
+  final String visibility;
 }
 
 /// An ICE candidate as JSON carries it (RTCIceCandidateInit).
@@ -123,6 +155,11 @@ class SignalMessage {
     this.camera,
     this.speakers = const [],
     this.resume,
+    this.track,
+    this.role,
+    this.visibility,
+    this.locked,
+    this.everyoneCanModerate,
   });
 
   factory SignalMessage.decode(String text) {
@@ -137,6 +174,10 @@ class SignalMessage {
       },
       error: json['error'] as String?,
       resume: json['resume'] as String?,
+      track: json['track'] as String?,
+      role: json['role'] as String?,
+      locked: json['locked'] as bool?,
+      everyoneCanModerate: json['everyoneCanModerate'] as bool?,
       bitrate: json['bitrate'] as int?,
       speakers: [
         for (final s in (json['speakers'] as List?) ?? const []) s as String,
@@ -184,6 +225,19 @@ class SignalMessage {
   /// In a welcome or resumed: the secret token for reconnecting.
   final String? resume;
 
+  /// In moderation messages: "mic" or "camera".
+  final String? track;
+
+  /// In a set_role.
+  final String? role;
+
+  /// In a state: VideoVisibility.everyone or VideoVisibility.trainerOnly.
+  final String? visibility;
+
+  /// Room settings, in settings, welcome, resumed and set_settings.
+  final bool? locked;
+  final bool? everyoneCanModerate;
+
   String encode() => jsonEncode({
     'type': type,
     'pc': ?pc,
@@ -192,5 +246,11 @@ class SignalMessage {
     if (tiles != null) 'tiles': [for (final t in tiles!) t.toJson()],
     'mic': ?mic,
     'camera': ?camera,
+    'id': ?id,
+    'track': ?track,
+    'role': ?role,
+    'visibility': ?visibility,
+    'locked': ?locked,
+    'everyoneCanModerate': ?everyoneCanModerate,
   });
 }

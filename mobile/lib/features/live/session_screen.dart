@@ -1,10 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../app/theme.dart';
 import '../../widgets/common.dart';
+import 'live_protocol.dart';
 import 'live_session_service.dart';
+import 'people_sheet.dart';
 import 'prejoin_screen.dart';
 import 'room_client.dart';
 
@@ -26,6 +30,7 @@ class _SessionScreenState extends State<SessionScreen> {
 
   /// The participant shown large, if any.
   String? _pinned;
+  StreamSubscription<RoomNotice>? _notices;
 
   @override
   void initState() {
@@ -37,6 +42,7 @@ class _SessionScreenState extends State<SessionScreen> {
       _self.srcObject = _client.localStream;
       setState(() => _selfReady = true);
     });
+    _notices = _client.notices.listen(_onNotice);
     _client.join();
     // Keeps camera and mic going if the phone is locked or the app is put
     // in the background, with a notification that can end the session.
@@ -46,6 +52,56 @@ class _SessionScreenState extends State<SessionScreen> {
         if (mounted && !_closing) _leave();
       },
     );
+  }
+
+  void _onNotice(RoomNotice notice) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    switch (notice) {
+      case MutedNotice(:final by, :final track):
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              '$by turned off your ${track == 'mic' ? 'microphone' : 'camera'}',
+            ),
+          ),
+        );
+      case InfoNotice(:final text):
+        messenger.showSnackBar(SnackBar(content: Text(text)));
+      case UnmuteRequest(:final by, :final track):
+        _askToUnmute(by, track);
+    }
+  }
+
+  /// A moderator asks us to unmute. Only we can, so it's our choice.
+  Future<void> _askToUnmute(String by, String track) async {
+    final mic = track == 'mic';
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: Icon(mic ? Icons.mic_rounded : Icons.videocam_rounded),
+        title: Text(mic ? 'Unmute?' : 'Turn on your camera?'),
+        content: Text(
+          '$by asks you to ${mic ? 'unmute' : 'turn on your camera'}.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(mic ? 'Unmute' : 'Turn on'),
+          ),
+        ],
+      ),
+    );
+    if (yes != true) return;
+    if (mic) {
+      _client.setMic(true);
+    } else {
+      _client.setCamera(true);
+    }
   }
 
   void _onChange() {
@@ -65,6 +121,7 @@ class _SessionScreenState extends State<SessionScreen> {
 
   @override
   void dispose() {
+    _notices?.cancel();
     LiveSessionService.stop();
     WakelockPlus.disable();
     _client.removeListener(_onChange);
@@ -291,7 +348,12 @@ class _RemoteTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = participant;
-    final name = p.name.isEmpty ? 'Joining…' : p.name;
+    final name = switch (p.role) {
+      _ when p.name.isEmpty => 'Joining…',
+      Role.host => '${p.name} · host',
+      Role.moderator => '${p.name} · moderator',
+      _ => p.name,
+    };
     final ratio = MediaQuery.devicePixelRatioOf(context);
     return LayoutBuilder(
       builder: (context, box) {
@@ -598,15 +660,34 @@ class _ControlBar extends StatelessWidget {
             offIcon: Icons.cameraswitch_rounded,
             onChanged: client.cameraOn ? (_) => client.flipCamera() : null,
           ),
-          FilledButton.icon(
-            style: FilledButton.styleFrom(
-              backgroundColor: AppColors.danger,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          Badge(
+            isLabelVisible: client.participants.isNotEmpty,
+            label: Text('${client.participants.length + 1}'),
+            child: RoundToggle(
+              on: true,
+              onIcon: Icons.people_alt_rounded,
+              offIcon: Icons.people_alt_rounded,
+              onChanged: (_) => showPeopleSheet(context, client),
             ),
-            onPressed: onLeave,
-            icon: const Icon(Icons.call_end_rounded),
-            label: const Text('Leave'),
+          ),
+          Tooltip(
+            message: 'Leave',
+            child: Material(
+              color: AppColors.danger,
+              shape: const CircleBorder(),
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: onLeave,
+                child: const Padding(
+                  padding: EdgeInsets.all(14),
+                  child: Icon(
+                    Icons.call_end_rounded,
+                    color: Colors.white,
+                    size: 26,
+                  ),
+                ),
+              ),
+            ),
           ),
         ],
       ),

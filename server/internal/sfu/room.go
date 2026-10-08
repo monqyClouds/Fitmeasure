@@ -223,8 +223,11 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 
 	welcome := signal.Message{Type: signal.TypeWelcome, ID: p.id, Participants: others, Resume: p.token}
+	settings := rm.settings()
+	welcome.Locked, welcome.EveryoneCanModerate = settings.Locked, settings.EveryoneCanModerate
 	welcome.ICEServers = rs.clientICEServers(p, log)
 	self := p.info()
+	welcome.Participant = &self // you, with your role
 	_ = p.send(welcome)
 	broadcast(rm.others(p), signal.Message{Type: signal.TypeParticipantJoined, Participant: &self})
 	for _, t := range tracks {
@@ -235,6 +238,10 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// stays in the room for the grace period, in case they reconnect.
 	for {
 		err := p.signal()
+		if p.removed.Load() {
+			log.Info("room: removed")
+			return
+		}
 		if deliberateLeave(err) {
 			log.Info("room: left", "reason", err)
 			return
@@ -288,6 +295,15 @@ func (rs *Rooms) join(roomName string, p *participant) (*room, []signal.Particip
 	if len(rm.participants) >= max {
 		return nil, nil, nil, errRoomFull
 	}
+	if rm.locked {
+		return nil, nil, nil, errRoomLocked
+	}
+	// Provisional, until there are accounts: whoever opens the room hosts it.
+	p.joinedAt = time.Now()
+	if len(rm.participants) == 0 {
+		rm.host = p
+		p.setRole(signal.RoleHost)
+	}
 	others := make([]signal.Participant, 0, len(rm.participants))
 	for _, q := range rm.participants {
 		others = append(others, q.info())
@@ -323,8 +339,16 @@ func (rs *Rooms) leave(rm *room, p *participant) {
 		delete(rs.rooms, rm.name)
 		close(rm.done)
 	}
+	var newHost *participant
+	if rm.host == p {
+		rm.host = nil
+		newHost = rm.successor()
+	}
 	rm.mu.Unlock()
 	rs.mu.Unlock()
+	if newHost != nil {
+		rm.setHost(newHost)
+	}
 
 	for _, t := range published {
 		rm.unpublish(t)
@@ -338,9 +362,12 @@ type room struct {
 	name string
 	done chan struct{} // closed when the last person leaves
 
-	mu           sync.Mutex
-	participants map[string]*participant
-	tracks       map[*upTrack]bool // every track being published in the room
+	mu                  sync.Mutex
+	participants        map[string]*participant
+	tracks              map[*upTrack]bool // every track being published in the room
+	host                *participant
+	locked              bool // no new joins (resumes still work)
+	everyoneCanModerate bool
 }
 
 // speakingLevel: audio louder than this (in -dBov: 0 is the loudest, 127
@@ -441,6 +468,8 @@ type participant struct {
 	sub      *webrtc.PeerConnection      // everyone else's, out
 	log      *slog.Logger
 	lastLoud atomic.Int64 // UnixNano of their last packet louder than speakingLevel
+	removed  atomic.Bool  // removed by a moderator
+	joinedAt time.Time    // set on joining, for choosing the next host
 
 	mu            sync.Mutex
 	closed        bool
@@ -451,7 +480,9 @@ type participant struct {
 	haveLayout    bool                             // whether they've sent one
 	probe         prober                           // bandwidth probing, used by allocateLoop only
 	room          *room                            // set once joined
-	mic, camera   bool                             // as they last reported
+	mic, camera   bool                             // as they last reported, or as a moderator set them
+	role          string                           // signal.RoleHost, RoleModerator or RoleParticipant
+	visibility    string                           // signal.VisibilityEveryone or VisibilityTrainerOnly
 	offerInFlight bool                             // a subscribe offer awaits its answer
 	offerAgain    bool                             // tracks changed meanwhile; offer again after the answer
 	iceRestart    bool                             // the next subscribe offer restarts ICE
@@ -476,6 +507,8 @@ func newParticipant(pubAPI, subAPI *webrtc.API, iceServers []webrtc.ICEServer, i
 		liveLayers: make(map[*upTrack]int),
 		mic:        true,
 		camera:     true,
+		role:       signal.RoleParticipant,
+		visibility: signal.VisibilityEveryone,
 	}
 	p.conn.Store(conn)
 
@@ -618,7 +651,13 @@ func (p *participant) resumed(iceServers []webrtc.ICEServer) {
 			others = append(others, q.info())
 		}
 	}
-	_ = p.send(signal.Message{Type: signal.TypeResumed, ID: p.id, Participants: others, ICEServers: iceServers, Resume: p.token})
+	self := p.info()
+	resumed := signal.Message{Type: signal.TypeResumed, ID: p.id, Participant: &self, Participants: others, ICEServers: iceServers, Resume: p.token}
+	if p.room != nil {
+		settings := p.room.settings()
+		resumed.Locked, resumed.EveryoneCanModerate = settings.Locked, settings.EveryoneCanModerate
+	}
+	_ = p.send(resumed)
 
 	// Any offer sent while the WebSocket was down was lost.
 	p.mu.Lock()
@@ -631,7 +670,7 @@ func (p *participant) resumed(iceServers []webrtc.ICEServer) {
 func (p *participant) info() signal.Participant {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return signal.Participant{ID: p.id, Name: p.name, Mic: p.mic, Camera: p.camera}
+	return signal.Participant{ID: p.id, Name: p.name, Mic: p.mic, Camera: p.camera, Role: p.role, Visibility: p.visibility}
 }
 
 // cameraOn reports whether p's camera is on; video from an off camera
@@ -650,16 +689,20 @@ func (p *participant) speaking(now time.Time) bool {
 	return mic && now.UnixNano()-p.lastLoud.Load() < int64(speakingHold)
 }
 
-// setState records p's microphone and camera, tells everyone else, and
-// pauses or resumes forwarding p's video to match the camera.
-func (p *participant) setState(mic, camera *bool) {
+// setState records p's microphone, camera and visibility (each when given),
+// tells everyone else, and re-targets p's tracks: a muted mic or an off
+// camera isn't forwarded at all, and "trainer only" video goes to the host
+// alone.
+func (p *participant) setState(mic, camera *bool, visibility string) {
 	p.mu.Lock()
 	if mic != nil {
 		p.mic = *mic
 	}
-	cameraChanged := camera != nil && *camera != p.camera
 	if camera != nil {
 		p.camera = *camera
+	}
+	if visibility == signal.VisibilityEveryone || visibility == signal.VisibilityTrainerOnly {
+		p.visibility = visibility
 	}
 	published := make([]*upTrack, 0, len(p.published))
 	for _, t := range p.published {
@@ -673,11 +716,39 @@ func (p *participant) setState(mic, camera *bool) {
 	}
 	self := p.info()
 	broadcast(rm.others(p), signal.Message{Type: signal.TypeParticipantChanged, Participant: &self})
-	if cameraChanged {
-		for _, t := range published {
-			t.retargetAll()
-		}
+	for _, t := range published {
+		t.retargetAll()
 	}
+}
+
+func (p *participant) getRole() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.role
+}
+
+func (p *participant) setRole(role string) {
+	p.mu.Lock()
+	p.role = role
+	p.mu.Unlock()
+}
+
+func (p *participant) micOn() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.mic
+}
+
+// videoFor reports whether p's camera should reach viewer: it's on, and p
+// shows it to everyone or viewer is the host.
+func (p *participant) videoFor(viewer *participant) bool {
+	p.mu.Lock()
+	camera, trainerOnly, rm := p.camera, p.visibility == signal.VisibilityTrainerOnly, p.room
+	p.mu.Unlock()
+	if !camera {
+		return false
+	}
+	return !trainerOnly || (rm != nil && rm.isHost(viewer))
 }
 
 // tileSize is how big the owner's tile is on p's screen. haveTile is false
@@ -972,9 +1043,10 @@ func (p *participant) signal() error {
 				return err
 			}
 			addPending(signal.PCPublish)
-			if err := conn.Send(signal.Message{Type: signal.TypeAnswer, PC: signal.PCPublish, SDP: answer}); err != nil {
-				return err
-			}
+			// A failed write doesn't end the loop: if the connection is gone,
+			// the next read says so, and says how (a close message already in
+			// the buffer means a deliberate leave, not a drop).
+			_ = conn.Send(signal.Message{Type: signal.TypeAnswer, PC: signal.PCPublish, SDP: answer})
 
 		case signal.TypeAnswer:
 			if msg.PC != signal.PCSubscribe {
@@ -991,7 +1063,7 @@ func (p *participant) signal() error {
 			p.setLayout(msg.Tiles)
 
 		case signal.TypeState:
-			p.setState(msg.Mic, msg.Camera)
+			p.setState(msg.Mic, msg.Camera, msg.Visibility)
 
 		case signal.TypeRestartICE:
 			p.restartICE()
@@ -1014,7 +1086,16 @@ func (p *participant) signal() error {
 			}
 
 		default:
-			sendError("unknown message type " + msg.Type)
+			if !moderationTypes[msg.Type] {
+				sendError("unknown message type " + msg.Type)
+				continue
+			}
+			if p.room == nil {
+				continue
+			}
+			if text := p.room.moderate(p, msg); text != "" {
+				sendError(text)
+			}
 		}
 	}
 }

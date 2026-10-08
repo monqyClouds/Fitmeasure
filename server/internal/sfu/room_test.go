@@ -87,6 +87,9 @@ type testPeer struct {
 
 	closing atomic.Bool // set once the test is tearing down
 	dropped atomic.Bool // offline between drop and reconnect: sends fail
+	// expectErrors passes server errors to events instead of failing the
+	// test, for tests of what's refused.
+	expectErrors atomic.Bool
 }
 
 func joinRoom(t *testing.T, url, name string) *testPeer {
@@ -245,10 +248,16 @@ func (p *testPeer) fail(err error) {
 
 // leave closes the WebSocket properly, as the Leave button does.
 func (p *testPeer) leave() {
+	p.closing.Store(true) // it's gone: errors from here on are expected
 	p.wsMu.Lock()
-	defer p.wsMu.Unlock()
 	_ = p.ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-	p.ws.Close()
+	ws := p.ws
+	p.wsMu.Unlock()
+	// Like a browser, wait for the server's close (the read loop ends)
+	// before cutting the connection.
+	_ = ws.SetReadDeadline(time.Now().Add(2 * time.Second))
+	time.Sleep(100 * time.Millisecond)
+	ws.Close()
 }
 
 // drop cuts the WebSocket without a close message, like a phone losing its
@@ -315,6 +324,10 @@ func (p *testPeer) readLoop() {
 				p.fail(err)
 			}
 		case signal.TypeError:
+			if p.expectErrors.Load() {
+				p.events <- m
+				continue
+			}
 			p.fail(fmt.Errorf("server error: %s", m.Error))
 		default:
 			p.events <- m
@@ -974,6 +987,151 @@ func TestRoomResumeGraceExpires(t *testing.T) {
 	if err := ws.ReadJSON(&m); err != nil || m.Type != signal.TypeError {
 		t.Fatalf("got %+v %v, want an error", m, err)
 	}
+}
+
+// expectError sends m from p and waits for the server to refuse it.
+func expectError(t *testing.T, p *testPeer, m signal.Message, want string) {
+	t.Helper()
+	p.expectErrors.Store(true)
+	p.send(m)
+	got := waitEvent(t, p, signal.TypeError, func(signal.Message) bool { return true })
+	if !strings.Contains(got.Error, want) {
+		t.Fatalf("%s: got error %q, want one about %q", m.Type, got.Error, want)
+	}
+}
+
+func role(t *testing.T, p *testPeer, of *testPeer, want string) {
+	t.Helper()
+	waitEvent(t, p, signal.TypeParticipantChanged, func(m signal.Message) bool {
+		return m.Participant.ID == of.id && m.Participant.Role == want
+	})
+}
+
+// The host and moderators can mute and remove; participants can't; nobody
+// can remove the host; only the host changes roles.
+func TestModerationRoles(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	a := joinRoom(t, url, "ada") // host: first in
+	b := joinRoom(t, url, "bo")
+	c := joinRoom(t, url, "cy")
+
+	expectError(t, b, signal.Message{Type: signal.TypeMute, ID: c.id, Track: "mic"}, "only the host and moderators")
+
+	a.send(signal.Message{Type: signal.TypeMute, ID: c.id, Track: "mic"})
+	muted := waitEvent(t, c, signal.TypeMutedBy, func(signal.Message) bool { return true })
+	if muted.ID != a.id || muted.Track != "mic" {
+		t.Fatalf("got %+v, want muted by a", muted)
+	}
+	waitEvent(t, b, signal.TypeParticipantChanged, func(m signal.Message) bool {
+		return m.Participant.ID == c.id && !m.Participant.Mic
+	})
+
+	a.send(signal.Message{Type: signal.TypeRequestUnmute, ID: c.id, Track: "mic"})
+	waitEvent(t, c, signal.TypeUnmuteRequested, func(m signal.Message) bool { return m.ID == a.id })
+
+	a.send(signal.Message{Type: signal.TypeSetRole, ID: b.id, Role: signal.RoleModerator})
+	role(t, b, b, signal.RoleModerator)
+	b.send(signal.Message{Type: signal.TypeMute, ID: c.id, Track: "camera"})
+	waitEvent(t, c, signal.TypeMutedBy, func(m signal.Message) bool { return m.Track == "camera" })
+
+	expectError(t, b, signal.Message{Type: signal.TypeSetRole, ID: c.id, Role: signal.RoleModerator}, "only the host")
+	expectError(t, b, signal.Message{Type: signal.TypeRemove, ID: a.id}, "host can't be removed")
+
+	c.closing.Store(true) // its connection is about to be closed under it
+	b.send(signal.Message{Type: signal.TypeRemove, ID: c.id})
+	waitEvent(t, c, signal.TypeRemoved, func(signal.Message) bool { return true })
+	// No grace period for a removal: everyone hears at once.
+	waitEvent(t, a, signal.TypeParticipantLeft, func(m signal.Message) bool { return m.Participant.ID == c.id })
+}
+
+// When the host leaves, the longest-present moderator takes over, otherwise
+// the longest-present participant.
+func TestModerationHostSuccession(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	a := joinRoom(t, url, "ada")
+	b := joinRoom(t, url, "bo")
+	c := joinRoom(t, url, "cy")
+
+	a.send(signal.Message{Type: signal.TypeSetRole, ID: c.id, Role: signal.RoleModerator})
+	role(t, b, c, signal.RoleModerator)
+	a.leave()
+	role(t, b, c, signal.RoleHost) // the moderator, though b has been here longer
+
+	c.leave()
+	role(t, b, b, signal.RoleHost)
+}
+
+// A locked room turns new people away; only the host and moderators lock.
+func TestModerationLock(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	a := joinRoom(t, url, "ada")
+	b := joinRoom(t, url, "bo")
+
+	on := true
+	expectError(t, b, signal.Message{Type: signal.TypeSetSettings, Locked: &on}, "only the host and moderators")
+	a.send(signal.Message{Type: signal.TypeSetSettings, Locked: &on})
+	settings := waitEvent(t, b, signal.TypeSettings, func(signal.Message) bool { return true })
+	if settings.Locked == nil || !*settings.Locked {
+		t.Fatalf("got %+v, want locked", settings)
+	}
+
+	ws := dial(t, url+"?name=cy")
+	var m signal.Message
+	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := ws.ReadJSON(&m); err != nil || m.Type != signal.TypeError || !strings.Contains(m.Error, "locked") {
+		t.Fatalf("got %+v %v, want a locked error", m, err)
+	}
+}
+
+// "Trainer only" video reaches the host and nobody else, and follows the
+// host role when it's handed over.
+func TestModerationTrainerOnly(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	stop := make(chan struct{})
+	defer close(stop)
+	a := joinRoom(t, url, "ada") // host
+	b := joinRoom(t, url, "bo")
+	go b.publishUntil(stop)
+	c := joinRoom(t, url, "cy")
+
+	b.send(signal.Message{Type: signal.TypeState, Visibility: signal.VisibilityTrainerOnly})
+	waitEvent(t, c, signal.TypeParticipantChanged, func(m signal.Message) bool {
+		return m.Participant.ID == b.id && m.Participant.Visibility == signal.VisibilityTrainerOnly
+	})
+
+	frames := func(p *testPeer) int {
+		p.videoMu.Lock()
+		defer p.videoMu.Unlock()
+		n := 0
+		for _, r := range p.videoLog {
+			if r.from == b.id {
+				n++
+			}
+		}
+		return n
+	}
+	flowing := func(p *testPeer) bool {
+		before := frames(p)
+		time.Sleep(time.Second)
+		return frames(p) > before
+	}
+	waitFlowing := func(p *testPeer, want bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if flowing(p) == want {
+				return
+			}
+		}
+		t.Fatalf("%s receiving b's video: got %v, want %v", p.id, !want, want)
+	}
+	waitFlowing(a, true)
+	waitFlowing(c, false)
+
+	a.send(signal.Message{Type: signal.TypeTransferHost, ID: c.id})
+	role(t, a, c, signal.RoleHost)
+	waitFlowing(c, true)
+	waitFlowing(a, false)
 }
 
 func TestRoomFull(t *testing.T) {

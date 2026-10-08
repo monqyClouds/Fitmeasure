@@ -23,7 +23,7 @@ const (
 	TypeError     = "error"
 
 	// Room events, server to client.
-	TypeWelcome           = "welcome"            // you joined: ID is yours, Participants are the others
+	TypeWelcome           = "welcome"            // you joined: ID and Participant are you (with your role), Participants the others
 	TypeParticipantJoined = "participant_joined" // Participant arrived
 	TypeParticipantLeft   = "participant_left"   // Participant left
 
@@ -53,6 +53,35 @@ const (
 	// (say the phone changed networks); restart ICE on the subscribe
 	// connection. The client restarts the publish connection itself.
 	TypeRestartICE = "restart_ice"
+
+	// Moderation, client to server. The server checks every one against the
+	// sender's role (docs/live-sessions.md section 3) and replies with an
+	// error if it isn't allowed. ID is the person acted on.
+	TypeSetRole       = "set_role"       // host only: Role "moderator" or "participant"
+	TypeTransferHost  = "transfer_host"  // host only; the old host becomes a moderator
+	TypeMute          = "mute"           // moderators: Track "mic" or "camera"
+	TypeRequestUnmute = "request_unmute" // moderators: Track; only the person can unmute
+	TypeRemove        = "remove"         // moderators, never on the host
+	TypeSetSettings   = "set_settings"   // Locked (host, moderators), EveryoneCanModerate (host)
+
+	// Moderation, server to client.
+	TypeMutedBy         = "muted_by"         // you were muted: ID (by whom), Track
+	TypeUnmuteRequested = "unmute_requested" // ID (by whom), Track: show the prompt
+	TypeRemoved         = "removed"          // you were removed; the connection closes
+	TypeSettings        = "settings"         // the room's Locked and EveryoneCanModerate
+)
+
+// Roles and visibility.
+const (
+	RoleHost        = "host"
+	RoleModerator   = "moderator"
+	RoleParticipant = "participant"
+
+	// VisibilityTrainerOnly sends your video to the host alone; everyone
+	// else gets your audio. For classes where people would rather not be
+	// watched by the whole room.
+	VisibilityEveryone    = "everyone"
+	VisibilityTrainerOnly = "trainer_only"
 )
 
 // Peer connection names. In a room each participant has two: one to publish
@@ -95,6 +124,16 @@ type Message struct {
 	// ?resume=<token> within the grace period puts you back in the room.
 	Resume string `json:"resume,omitempty"`
 
+	// Track, in moderation messages: "mic" or "camera".
+	Track string `json:"track,omitempty"`
+	// Role, in a set_role.
+	Role string `json:"role,omitempty"`
+	// Visibility, in a state: VisibilityEveryone or VisibilityTrainerOnly.
+	Visibility string `json:"visibility,omitempty"`
+	// Room settings, in set_settings, settings, welcome and resumed.
+	Locked              *bool `json:"locked,omitempty"`
+	EveryoneCanModerate *bool `json:"everyoneCanModerate,omitempty"`
+
 	// Speakers, in a speakers message. Missing means nobody.
 	Speakers []string `json:"speakers,omitempty"`
 }
@@ -110,10 +149,12 @@ type Tile struct {
 // stream whose ID is the participant's ID, so clients can tell whose video is
 // whose.
 type Participant struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Mic    bool   `json:"mic"`
-	Camera bool   `json:"camera"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Mic        bool   `json:"mic"`
+	Camera     bool   `json:"camera"`
+	Role       string `json:"role"`
+	Visibility string `json:"visibility"`
 }
 
 const (
