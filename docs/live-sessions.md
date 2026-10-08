@@ -1,6 +1,6 @@
 # Live sessions: design
 
-Status: draft for review. Nothing here is built yet.
+Status: in progress. Stage S1 (echo) is built in `server/`; see its README.
 
 Fitmeasure today is local-only: profiles, plans, workouts and measurements
 live on the phone. This document describes the first online feature: **live

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Echo test · Fitmeasure SFU</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Echo test</h1>
+    <p>Stage 1: your camera goes to the server and comes straight back.
+      The left video is local; the right one has made the round trip.</p>
+  </header>
+
+  <main>
+    <div class="videos">
+      <figure>
+        <video id="local" autoplay playsinline muted></video>
+        <figcaption>You (local)</figcaption>
+      </figure>
+      <figure>
+        <video id="remote" autoplay playsinline></video>
+        <figcaption>Echo (from the server)</figcaption>
+      </figure>
+    </div>
+
+    <div class="controls">
+      <button id="start">Start</button>
+      <button id="stop" disabled>Stop</button>
+      <label><input type="checkbox" id="audio"> Echo audio too (use headphones)</label>
+    </div>
+
+    <section>
+      <h2>Connection</h2>
+      <dl id="stats" class="stats"></dl>
+    </section>
+
+    <section>
+      <h2>What happened</h2>
+      <ol id="log" class="log"></ol>
+    </section>
+  </main>
+
+  <script src="echo.js"></script>
+</body>
+</html>
