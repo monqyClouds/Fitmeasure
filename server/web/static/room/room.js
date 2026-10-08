@@ -160,7 +160,10 @@ function renderCaption(id) {
     tile.caption.append(' ', badge);
   }
   tile.figure.classList.toggle('can-moderate', id !== me && canModerate());
-  tile.figure.classList.toggle('camera-off', !state.camera);
+  // Video that doesn't reach us shows initials, not the last frame.
+  tile.figure.classList.toggle('camera-off', id !== me ? !canSeeVideoOf(id) : !state.camera);
+  // Someone trainer-only sees the trainer alone.
+  tile.figure.hidden = id !== me && trainerOnlyViewer() && state.role !== 'host';
   tile.figure.classList.toggle('speaking', speakers.has(id));
   tile.avatar.textContent = (nameOf(id).trim()[0] ?? '?').toUpperCase();
   if (tile.detail) {
@@ -494,6 +497,20 @@ function roleName(role) {
   return role === 'host' ? 'the host' : role === 'moderator' ? 'a moderator' : 'a participant';
 }
 
+// "Trainer only" works both ways, as the server enforces: a trainer-only
+// person's video goes to the host alone, and they see the host alone.
+function trainerOnlyViewer() {
+  return states.get(me)?.visibility === 'trainer_only' && myRole !== 'host';
+}
+
+function canSeeVideoOf(id) {
+  const s = states.get(id) ?? {};
+  if (s.camera === false) return false;
+  if (s.visibility === 'trainer_only' && myRole !== 'host') return false;
+  if (trainerOnlyViewer() && s.role !== 'host') return false;
+  return true;
+}
+
 function canModerate() {
   return myRole === 'host' || myRole === 'moderator' || settings.everyoneCanModerate;
 }
@@ -782,7 +799,7 @@ $('trainer-only').onchange = () => {
   const visibility = $('trainer-only').checked ? 'trainer_only' : 'everyone';
   send({ type: 'state', visibility });
   states.set(me, { ...states.get(me), visibility });
-  renderCaption(me);
+  tiles.forEach((_, id) => renderCaption(id));
   log(visibility === 'trainer_only' ? 'Only the host sees your video now' : 'Everyone sees your video now');
 };
 $('cam').onclick = () => toggle('cam');

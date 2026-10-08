@@ -125,7 +125,9 @@ class _SessionScreenState extends State<SessionScreen> {
         .firstOrNull
         ?.id;
     return _order.update(
-      present: _client.participants.keys,
+      present: _client.participants.values
+          .where(_client.inGrid)
+          .map((p) => p.id),
       speaking: _client.speaking,
       now: DateTime.now(),
       pinned: _pinned,
@@ -386,6 +388,7 @@ class _Page extends StatelessWidget {
       final p = client.participants[id];
       if (p == null) return const SizedBox.shrink();
       return _RemoteTile(
+        showVideo: client.canSeeVideoOf(p),
         // A global key: when the order changes (a speaker promoted), Flutter
         // moves the tile with its video surface instead of building a new
         // one, which can show black until it's re-attached.
@@ -518,6 +521,7 @@ class _SpeakingChip extends StatelessWidget {
 class _RemoteTile extends StatelessWidget {
   const _RemoteTile({
     super.key,
+    required this.showVideo,
     required this.participant,
     required this.speaking,
     required this.onTap,
@@ -525,6 +529,7 @@ class _RemoteTile extends StatelessWidget {
   });
 
   final RemoteParticipant participant;
+  final bool showVideo;
   final bool speaking;
   final VoidCallback onTap;
   final void Function(int width, int height) onSize;
@@ -556,7 +561,7 @@ class _RemoteTile extends StatelessWidget {
             name: name,
             micOn: p.mic,
             speaking: speaking,
-            video: p.stream != null && p.hasVideo && p.camera
+            video: p.stream != null && p.hasVideo && showVideo
                 ? Stack(
                     fit: StackFit.expand,
                     children: [

@@ -735,6 +735,11 @@ func (p *participant) setState(mic, camera *bool, visibility string) {
 	for _, t := range p.published {
 		published = append(published, t)
 	}
+	// Visibility also decides what p receives, so re-choose those too.
+	received := make([]*downTrack, 0, len(p.downs))
+	for _, d := range p.downs {
+		received = append(received, d)
+	}
 	rm := p.room
 	p.mu.Unlock()
 
@@ -745,6 +750,9 @@ func (p *participant) setState(mic, camera *bool, visibility string) {
 	broadcast(rm.others(p), signal.Message{Type: signal.TypeParticipantChanged, Participant: &self})
 	for _, t := range published {
 		t.retargetAll()
+	}
+	for _, d := range received {
+		d.retarget()
 	}
 }
 
@@ -766,16 +774,26 @@ func (p *participant) micOn() bool {
 	return p.mic
 }
 
-// videoFor reports whether p's camera should reach viewer: it's on, and p
-// shows it to everyone or viewer is the host.
+// videoFor reports whether p's camera should reach viewer. "Trainer only"
+// works both ways: a trainer-only person's video goes to the host alone, and
+// they see the host alone.
 func (p *participant) videoFor(viewer *participant) bool {
 	p.mu.Lock()
 	camera, trainerOnly, rm := p.camera, p.visibility == signal.VisibilityTrainerOnly, p.room
 	p.mu.Unlock()
-	if !camera {
+	viewer.mu.Lock()
+	viewerTrainerOnly := viewer.visibility == signal.VisibilityTrainerOnly
+	viewer.mu.Unlock()
+	if !camera || rm == nil {
 		return false
 	}
-	return !trainerOnly || (rm != nil && rm.isHost(viewer))
+	if trainerOnly && !rm.isHost(viewer) {
+		return false
+	}
+	if viewerTrainerOnly && !rm.isHost(p) {
+		return false
+	}
+	return true
 }
 
 // tileSize is how big the owner's tile is on p's screen. haveTile is false

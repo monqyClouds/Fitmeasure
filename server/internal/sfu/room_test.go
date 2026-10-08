@@ -1169,6 +1169,57 @@ func TestModerationTrainerOnly(t *testing.T) {
 	waitFlowing(a, false)
 }
 
+// Someone who chooses "trainer only" also sees only the trainer: other
+// people's video stops reaching them, including video that was already
+// flowing, and comes back when they switch it off.
+func TestModerationTrainerOnlySeesOnlyTrainer(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	stop := make(chan struct{})
+	defer close(stop)
+	a := joinRoom(t, url, "ada") // host
+	go a.publishUntil(stop)
+	b := joinRoom(t, url, "bo")
+	go b.publishUntil(stop)
+	c := joinRoom(t, url, "cy")
+
+	from := func(sender *testPeer) func() bool {
+		return func() bool {
+			count := func() int {
+				c.videoMu.Lock()
+				defer c.videoMu.Unlock()
+				n := 0
+				for _, r := range c.videoLog {
+					if r.from == sender.id {
+						n++
+					}
+				}
+				return n
+			}
+			before := count()
+			time.Sleep(time.Second)
+			return count() > before
+		}
+	}
+	wait := func(flowing func() bool, want bool, what string) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if flowing() == want {
+				return
+			}
+		}
+		t.Fatalf("c receiving %s: got %v, want %v", what, !want, want)
+	}
+	wait(from(b), true, "b's video before")
+
+	c.send(signal.Message{Type: signal.TypeState, Visibility: signal.VisibilityTrainerOnly})
+	wait(from(b), false, "b's video, trainer only")
+	wait(from(a), true, "the host's video, trainer only")
+
+	c.send(signal.Message{Type: signal.TypeState, Visibility: signal.VisibilityEveryone})
+	wait(from(b), true, "b's video after")
+}
+
 func TestRoomFull(t *testing.T) {
 	url := startRooms(t, 2) + "gym"
 	joinRoom(t, url, "ada")

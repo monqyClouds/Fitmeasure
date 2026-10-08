@@ -195,6 +195,27 @@ class RoomClient extends ChangeNotifier {
   bool get canModerate =>
       myRole == Role.host || myRole == Role.moderator || everyoneCanModerate;
 
+  bool get _trainerOnlyViewer =>
+      myVisibility == VideoVisibility.trainerOnly && myRole != Role.host;
+
+  /// Whether p's video reaches us, by the same rules the server applies:
+  /// "trainer only" video goes to the host alone, and someone trainer-only
+  /// sees the host alone. When it doesn't, their tile shows their avatar
+  /// rather than the last frame received.
+  bool canSeeVideoOf(RemoteParticipant p) {
+    if (!p.camera) return false;
+    if (p.visibility == VideoVisibility.trainerOnly && myRole != Role.host) {
+      return false;
+    }
+    if (_trainerOnlyViewer && p.role != Role.host) return false;
+    return true;
+  }
+
+  /// Whether p gets a tile: everyone, except that someone trainer-only sees
+  /// the trainer alone (they still hear everyone).
+  bool inGrid(RemoteParticipant p) =>
+      !_trainerOnlyViewer || p.role == Role.host;
+
   final _notices = StreamController<RoomNotice>.broadcast();
 
   /// Things to show: being muted, unmute requests, role changes.
