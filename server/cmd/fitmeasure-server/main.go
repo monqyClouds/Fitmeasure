@@ -30,6 +30,7 @@ import (
 	"github.com/monqyClouds/Fitmeasure/server/internal/relay"
 	"github.com/monqyClouds/Fitmeasure/server/internal/rtc"
 	"github.com/monqyClouds/Fitmeasure/server/internal/sfu"
+	"github.com/monqyClouds/Fitmeasure/server/internal/shares"
 	"github.com/monqyClouds/Fitmeasure/server/internal/tlsmux"
 	"github.com/monqyClouds/Fitmeasure/server/web"
 )
@@ -50,6 +51,7 @@ type config struct {
 	acmeEmail  string
 	bwe        bool
 	roomsFile  string
+	sharesDir  string
 	androidApp string
 }
 
@@ -76,6 +78,7 @@ func main() {
 	flag.StringVar(&c.acmeEmail, "acme-email", envString("FITMEASURE_ACME_EMAIL", ""), "email Let's Encrypt may contact about certificates (env FITMEASURE_ACME_EMAIL)")
 	flag.BoolVar(&c.bwe, "bwe", envString("FITMEASURE_BWE", "on") != "off", "fit each viewer's layers to an estimate of their bandwidth; FITMEASURE_BWE=off chooses by tile size only (env FITMEASURE_BWE)")
 	flag.StringVar(&c.roomsFile, "rooms-file", envString("FITMEASURE_ROOMS_FILE", "rooms.json"), "where created rooms are saved, so their links survive restarts; empty keeps them in memory only (env FITMEASURE_ROOMS_FILE)")
+	flag.StringVar(&c.sharesDir, "shares-dir", envString("FITMEASURE_SHARES_DIR", "shares"), "where shared exercises and plans are kept, one file each (env FITMEASURE_SHARES_DIR)")
 	flag.StringVar(&c.androidApp, "android-app", envString("FITMEASURE_ANDROID_APP", ""), "package:sha256 of the Android app (fingerprints comma-separated) that may open room links, published at /.well-known/assetlinks.json (env FITMEASURE_ANDROID_APP)")
 	flag.Parse()
 
@@ -193,6 +196,22 @@ func run(log *slog.Logger, c config) error {
 	routes.Handle("GET /ws/echo", &sfu.Echo{API: api, ICEServers: rtcCfg.ICEServers, Log: log})
 	routes.Handle("GET /ws/rooms/{room}", rooms)
 	(&directory.API{Dir: dir, People: rooms.People, Log: log}).Register(routes)
+	store, err := shares.Open(c.sharesDir)
+	if err != nil {
+		return err
+	}
+	go func() {
+		for {
+			store.Prune()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(24 * time.Hour):
+			}
+		}
+	}()
+	androidPackage, _, _ := strings.Cut(c.androidApp, ":")
+	(&shares.API{Store: store, AndroidPackage: androidPackage, Log: log}).Register(routes)
 	site := web.Handler()
 	routes.Handle("GET /", site)
 	routes.Handle("GET /r/{id}", web.RoomPage())

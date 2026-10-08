@@ -17,6 +17,7 @@ import 'exercise_editor_screen.dart';
 import 'media_viewer_screen.dart';
 import 'muscle_icon.dart';
 import 'video_links.dart';
+import '../share/share_actions.dart';
 
 class ExerciseDetailScreen extends ConsumerStatefulWidget {
   const ExerciseDetailScreen({super.key, required this.exerciseId});
@@ -91,6 +92,11 @@ class _ExerciseDetailScreenState extends ConsumerState<ExerciseDetailScreen> {
             expandedHeight: 220,
             backgroundColor: AppColors.background,
             actions: [
+              IconButton(
+                tooltip: 'Share',
+                icon: const Icon(Icons.ios_share_rounded),
+                onPressed: () => shareExercise(context, ref, exercise),
+              ),
               if (exercise.profileId != null)
                 IconButton(
                   tooltip: 'Edit',

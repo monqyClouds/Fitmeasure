@@ -100,27 +100,29 @@ class RoomsApi {
 
   /// Creates a room called [name]. We get its host key: keep it.
   Future<LiveRoom> create(String name) async {
-    final (status, body) = await _request(
+    final (status, body) = await request(
       'POST',
       '/api/rooms',
       body: {'name': name},
     );
-    if (status != 201) throw RoomsApiException(_error(body));
+    if (status != 201) throw RoomsApiException(error(body));
     return LiveRoom.fromJson(body);
   }
 
   /// The room with [id], or null if there's none.
   Future<LiveRoom?> find(String id) async {
-    final (status, body) = await _request('GET', '/api/rooms/$id');
+    final (status, body) = await request('GET', '/api/rooms/$id');
     if (status == 404) return null;
-    if (status != 200) throw RoomsApiException(_error(body));
+    if (status != 200) throw RoomsApiException(error(body));
     return LiveRoom.fromJson(body);
   }
 
-  static String _error(Map<String, Object?> body) =>
+  static String error(Map<String, Object?> body) =>
       body['error'] as String? ?? 'Something went wrong on the server';
 
-  static Future<(int, Map<String, Object?>)> _request(
+  /// A JSON request to the live server: its status and JSON body. Throws a
+  /// RoomsApiException, in words to show, when the server can't be reached.
+  static Future<(int, Map<String, Object?>)> request(
     String method,
     String path, {
     Object? body,

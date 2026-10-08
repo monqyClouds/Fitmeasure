@@ -52,6 +52,7 @@
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="https" android:host="live.somto.si" android:pathPrefix="/r/"/>
+                <data android:pathPrefix="/s/"/>
             </intent-filter>
         </activity>
         <service

@@ -10,6 +10,8 @@ import '../library/library_screen.dart';
 import '../live/join_room.dart';
 import '../live/live_screen.dart';
 import '../live/rooms_api.dart';
+import '../share/import_share_screen.dart';
+import '../share/shares_api.dart';
 import '../plans/plans_screen.dart';
 import '../progress/progress_screen.dart';
 import '../today/today_screen.dart';
@@ -48,8 +50,17 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   }
 
   void _onLink(Uri uri) {
+    if (!mounted) return;
+    if (shareIdFromLink(uri) case final share?) {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => ImportShareScreen(shareId: share),
+        ),
+      );
+      return;
+    }
     final id = roomIdFromLink(uri);
-    if (id == null || !mounted) return;
+    if (id == null) return;
     setState(() => _index = _liveTab);
     openRoomById(context, ref, id);
   }

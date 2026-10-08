@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"sync"
-	"time"
+
+	"github.com/monqyClouds/Fitmeasure/server/internal/limit"
 )
 
 // API serves the directory over HTTP:
@@ -28,8 +28,8 @@ type API struct {
 
 	Log *slog.Logger
 
-	mu      sync.Mutex
-	creates map[string][]time.Time
+	once    sync.Once
+	creates *limit.PerHour
 }
 
 // Register adds the API's routes to mux.
@@ -54,7 +54,14 @@ func (a *API) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "expected {\"name\": \"…\"}")
 		return
 	}
-	if !a.allow(clientIP(r)) {
+	a.once.Do(func() {
+		n := a.CreatesPerHour
+		if n == 0 {
+			n = 30
+		}
+		a.creates = &limit.PerHour{N: n}
+	})
+	if !a.creates.Allow(limit.ClientIP(r)) {
 		writeError(w, http.StatusTooManyRequests, "too many rooms created; try again later")
 		return
 	}
@@ -96,74 +103,7 @@ func (a *API) get(w http.ResponseWriter, r *http.Request) {
 }
 
 // Link is the room's shareable address, on the host the request came to.
-func Link(r *http.Request, id string) string {
-	scheme := "https"
-	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" && isLoopbackHost(r.Host) {
-		scheme = "http"
-	}
-	return scheme + "://" + r.Host + "/r/" + id
-}
-
-func isLoopbackHost(hostport string) bool {
-	host, _, err := net.SplitHostPort(hostport)
-	if err != nil {
-		host = hostport
-	}
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
-}
-
-// allow reports whether ip may create another room now, and counts it.
-func (a *API) allow(ip string) bool {
-	limit := a.CreatesPerHour
-	if limit == 0 {
-		limit = 30
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.creates == nil {
-		a.creates = map[string][]time.Time{}
-	}
-	now := time.Now()
-	recent := a.creates[ip][:0]
-	for _, t := range a.creates[ip] {
-		if now.Sub(t) < time.Hour {
-			recent = append(recent, t)
-		}
-	}
-	if len(recent) >= limit {
-		a.creates[ip] = recent
-		return false
-	}
-	a.creates[ip] = append(recent, now)
-	// Forget addresses that have gone quiet, now and then.
-	if len(a.creates) > 10000 {
-		for k, ts := range a.creates {
-			if len(ts) == 0 || now.Sub(ts[len(ts)-1]) > time.Hour {
-				delete(a.creates, k)
-			}
-		}
-	}
-	return true
-}
-
-// clientIP is the request's address; behind our nginx (a loopback peer),
-// the one nginx passes on.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		if real := r.Header.Get("X-Real-IP"); real != "" {
-			return real
-		}
-	}
-	return host
-}
+func Link(r *http.Request, id string) string { return limit.BaseURL(r) + "/r/" + id }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

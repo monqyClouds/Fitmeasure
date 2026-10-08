@@ -1,3 +1,5 @@
+import '../share/share_actions.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -216,6 +218,11 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       appBar: AppBar(
         title: Text(plan.name),
         actions: [
+          IconButton(
+            tooltip: 'Share plan',
+            icon: const Icon(Icons.ios_share_rounded),
+            onPressed: () => sharePlan(context, ref, plan),
+          ),
           PopupMenuButton<String>(
             onSelected: (a) => _menu(a, plan),
             itemBuilder: (_) => const [

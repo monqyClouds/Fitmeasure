@@ -350,3 +350,19 @@ current step, so all phones count down the same second.
 
 Timed steps move on by themselves. The app builds the steps from a plan day
 or from exercises picked on the spot (`mobile/lib/features/live/workout_steps.dart`).
+
+## Sharing exercises and plans
+
+The app shares an exercise (with its video links) or a whole plan as a link.
+A share is a snapshot, kept as a file in `-shares-dir` (`FITMEASURE_SHARES_DIR`,
+default `shares`) and removed after a year unopened.
+
+| | |
+|---|---|
+| `POST /api/shares` | `{kind: "exercise", exercise: {…}}` or `{kind: "plan", plan: {name, schedule, days: [{name, weekday?, items: [{exercise, sets, reps?, weightKg?, durationSec?, distanceKm?, restSec?}]}]}}`, at most 64 KB; an exercise is `{name, muscle, equipment, tracking, notes?, videos: [{url, title?}]}`. Only http(s) links are kept. 60 per hour per address. `201 {"id", "link"}`. |
+| `GET /api/shares/{id}` | The share, or `404`. |
+| `GET /s/{id}` | A page showing it, with link-preview tags (title, first video's thumbnail) and, on Android, a button that opens it in the app. |
+
+In the app, opening a share link previews it; adding an exercise reuses one
+with the same name (adding the videos it lacks), and adding a plan makes it
+the active plan.

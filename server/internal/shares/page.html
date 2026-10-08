@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {{if .Found}}
+  <title>{{.Title}} · Fitmeasure</title>
+  <meta property="og:title" content="{{.Title}}">
+  <meta property="og:description" content="{{.Kind}} on Fitmeasure · {{.Summary}}">
+  {{if .Image}}<meta property="og:image" content="{{.Image}}">{{end}}
+  {{else}}
+  <title>Not found · Fitmeasure</title>
+  {{end}}
+  <style>
+    :root { --bg: #0c0d11; --surface: #15171d; --high: #1c1f26; --text: #f4f5f7; --text-2: #a0a6b1; --text-3: #6b717c; --accent: #b8f34a; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 640px; margin: 0 auto; padding: 32px 16px 48px; }
+    .kind { color: var(--accent); font-size: 12px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; }
+    h1 { margin: 4px 0 2px; font-size: 30px; letter-spacing: -0.5px; }
+    .summary { color: var(--text-2); margin: 0 0 20px; }
+    .open { display: block; text-align: center; padding: 14px 22px; border-radius: 16px; background: var(--accent); color: #0c0d11; font-weight: 800; text-decoration: none; margin: 0 0 8px; }
+    .hint { color: var(--text-3); font-size: 13px; text-align: center; margin: 0 0 28px; }
+    .notes { color: var(--text-2); white-space: pre-wrap; }
+    h2 { font-size: 13px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-3); margin: 28px 0 10px; }
+    .videos { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+    .video { display: block; color: var(--text); text-decoration: none; }
+    .thumb { position: relative; aspect-ratio: 16 / 9; border-radius: 16px; overflow: hidden; background: linear-gradient(135deg, #2a2e38, var(--high)); }
+    .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .thumb .play { position: absolute; inset: 0; margin: auto; width: 46px; height: 46px; border-radius: 50%; background: rgb(0 0 0 / 0.55); display: grid; place-items: center; }
+    .thumb .play::after { content: ""; border-left: 14px solid #fff; border-top: 9px solid transparent; border-bottom: 9px solid transparent; margin-left: 4px; }
+    .source { position: absolute; left: 10px; bottom: 10px; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 8px; background: rgb(0 0 0 / 0.6); }
+    .source.yt { background: #ff0033; }
+    .video .title { margin-top: 6px; font-weight: 600; font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .day { background: var(--surface); border-radius: 20px; padding: 16px; margin-bottom: 12px; }
+    .day h3 { margin: 0 0 8px; font-size: 18px; }
+    .item { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--high); }
+    .item:first-of-type { border-top: 0; }
+    .item small { color: var(--text-2); display: block; }
+    .item .vids { color: var(--accent); font-size: 13px; white-space: nowrap; }
+    footer { margin-top: 40px; color: var(--text-3); font-size: 13px; text-align: center; }
+  </style>
+</head>
+<body>
+  <main>
+  {{if .Found}}
+    <div class="kind">{{.Kind}} shared from Fitmeasure</div>
+    <h1>{{.Title}}</h1>
+    <p class="summary">{{.Summary}}</p>
+    {{if .AppLink}}<a class="open" href="{{.AppLink}}">Open in Fitmeasure</a>
+    <p class="hint">Adds it to your library, ready to use.</p>{{end}}
+
+    {{with .Exercise}}
+      {{if .Notes}}<p class="notes">{{.Notes}}</p>{{end}}
+      {{if .Videos}}
+      <h2>How to do it</h2>
+      <div class="videos">
+        {{range .Videos}}
+        <a class="video" href="{{.URL}}" target="_blank" rel="noopener">
+          <div class="thumb">
+            {{if .Thumb}}<img src="{{.Thumb}}" alt="" loading="lazy">{{end}}
+            <span class="play"></span>
+            <span class="source{{if eq .Source "YouTube"}} yt{{end}}">{{.Source}}</span>
+          </div>
+          <div class="title">{{.Title}}</div>
+        </a>
+        {{end}}
+      </div>
+      {{end}}
+    {{end}}
+
+    {{range .Days}}
+    <section class="day">
+      <h3>{{.Name}}</h3>
+      {{range .Exercises}}
+      <div class="item">
+        <div>{{.Name}}<small>{{.Targets}}</small></div>
+        {{with .Videos}}<a class="vids" href="{{(index . 0).URL}}" target="_blank" rel="noopener">▶ {{len .}} video{{if gt (len .) 1}}s{{end}}</a>{{end}}
+      </div>
+      {{end}}
+    </section>
+    {{end}}
+  {{else}}
+    <div class="kind">Fitmeasure</div>
+    <h1>Nothing here</h1>
+    <p class="summary">This link doesn't lead to a shared exercise or plan. Shares unopened for a year are removed.</p>
+  {{end}}
+    <footer>Fitmeasure · train, track, and train together</footer>
+  </main>
+</body>
+</html>
