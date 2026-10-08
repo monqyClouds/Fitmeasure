@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 
@@ -60,6 +61,9 @@ type testPeer struct {
 	media  chan received
 	events chan signal.Message // everything except signalling
 
+	// Sender reports about received streams whose SSRC matched the stream.
+	senderReports chan *rtcp.SenderReport
+
 	closing atomic.Bool // set once the test is tearing down
 }
 
@@ -86,8 +90,9 @@ func joinRoomWith(t *testing.T, url, name string, policy webrtc.ICETransportPoli
 	api := newTestAPI(t)
 	p := &testPeer{
 		t: t, id: welcome.ID, ws: ws,
-		media:  make(chan received, 64),
-		events: make(chan signal.Message, 64),
+		media:         make(chan received, 64),
+		events:        make(chan signal.Message, 64),
+		senderReports: make(chan *rtcp.SenderReport, 16),
 	}
 	var err error
 	pcConfig := webrtc.Configuration{ICEServers: welcome.ICEServers, ICETransportPolicy: policy}
@@ -107,7 +112,23 @@ func joinRoomWith(t *testing.T, url, name string, policy webrtc.ICETransportPoli
 		t.Fatal(err)
 	}
 
-	p.sub.OnTrack(func(remote *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+	p.sub.OnTrack(func(remote *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		go func() {
+			for {
+				packets, _, err := receiver.ReadRTCP()
+				if err != nil {
+					return
+				}
+				for _, pkt := range packets {
+					if sr, ok := pkt.(*rtcp.SenderReport); ok && sr.SSRC == uint32(remote.SSRC()) {
+						select {
+						case p.senderReports <- sr:
+						default:
+						}
+					}
+				}
+			}
+		}()
 		for {
 			pkt, _, err := remote.ReadRTP()
 			if err != nil {
@@ -342,6 +363,52 @@ func TestRoomOverTURN(t *testing.T) {
 	// Each client relays its publish and its subscribe connection.
 	if n := turn.Allocations(); n < 4 {
 		t.Fatalf("got %d TURN allocations, want at least 4", n)
+	}
+}
+
+// The publisher's sender reports reach subscribers with the same clock
+// mapping, under the SSRC of the stream the subscriber receives, so audio
+// and video can be lined up by capture time.
+func TestRoomForwardsSenderReports(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	stop := make(chan struct{})
+	defer close(stop)
+
+	a := joinRoom(t, url, "ada")
+	go a.publishUntil(stop)
+	b := joinRoom(t, url, "bo")
+
+	deadline := time.After(15 * time.Second)
+	for got := false; !got; {
+		select {
+		case r := <-b.media:
+			got = r.from == a.id
+		case <-deadline:
+			t.Fatal("b never received a's video")
+		}
+	}
+
+	senders := a.pub.GetSenders()
+	ssrc := uint32(senders[0].GetParameters().Encodings[0].SSRC)
+	want := &rtcp.SenderReport{SSRC: ssrc, NTPTime: 0xE8F0_1234_8000_0000, RTPTime: 123456, PacketCount: 7, OctetCount: 900}
+
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	deadline = time.After(10 * time.Second)
+	for {
+		select {
+		case <-tick.C:
+			if err := a.pub.WriteRTCP([]rtcp.Packet{want}); err != nil {
+				t.Fatal(err)
+			}
+		case sr := <-b.senderReports:
+			if sr.NTPTime != want.NTPTime || sr.RTPTime != want.RTPTime || sr.PacketCount != want.PacketCount {
+				t.Fatalf("got sender report %+v, want the publisher's clock mapping %+v", sr, want)
+			}
+			return
+		case <-deadline:
+			t.Fatal("no sender report reached the subscriber")
+		}
 	}
 }
 

@@ -82,16 +82,23 @@ func (e *Echo) run(conn *signal.Conn, log *slog.Logger) error {
 	go relayKeyframeRequests(videoSender, requestKeyframe)
 	go drainRTCP(audioSender)
 
-	pc.OnTrack(func(remote *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+	pc.OnTrack(func(remote *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		log.Info("echo: receiving track", "kind", remote.Kind(), "codec", remote.Codec().MimeType, "ssrc", remote.SSRC())
-		out := audio
+		out, sender := audio, audioSender
 		if remote.Kind() == webrtc.RTPCodecTypeVideo {
-			out = video
+			out, sender = video, videoSender
 			videoSSRC.Store(uint32(remote.SSRC()))
 			// Ask for a keyframe straight away, so the echo can start
 			// decoding without waiting for the next periodic one.
 			requestKeyframe()
 		}
+		// The client's sender reports, under the echo's SSRC, keep the
+		// echoed audio and video in sync.
+		go readSenderReports(receiver, remote, func(sr *rtcp.SenderReport) {
+			if out, ok := senderReportFor(sender, sr); ok {
+				_ = pc.WriteRTCP([]rtcp.Packet{out})
+			}
+		})
 		forward(remote, out)
 	})
 

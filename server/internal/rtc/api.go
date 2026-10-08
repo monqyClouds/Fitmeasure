@@ -9,6 +9,7 @@ import (
 
 	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
+	"github.com/pion/interceptor/pkg/report"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -37,17 +38,18 @@ type Config struct {
 }
 
 // NewAPI returns a WebRTC API that only negotiates VP8 video and Opus audio,
-// with the default interceptors: NACK (retransmission requests), RTCP sender
-// and receiver reports, and transport-wide congestion control feedback.
+// with NACK (retransmission requests), RTCP receiver reports and
+// transport-wide congestion control feedback. Sender reports are forwarded
+// from publishers rather than generated; see newInterceptors.
 func NewAPI(cfg Config) (*webrtc.API, error) {
 	media := &webrtc.MediaEngine{}
 	if err := registerCodecs(media); err != nil {
 		return nil, err
 	}
 
-	interceptors := &interceptor.Registry{}
-	if err := webrtc.RegisterDefaultInterceptors(media, interceptors); err != nil {
-		return nil, fmt.Errorf("register interceptors: %w", err)
+	interceptors, err := newInterceptors(media)
+	if err != nil {
+		return nil, err
 	}
 
 	settings := webrtc.SettingEngine{}
@@ -88,6 +90,38 @@ func NewAPI(cfg Config) (*webrtc.API, error) {
 		webrtc.WithInterceptorRegistry(interceptors),
 		webrtc.WithSettingEngine(settings),
 	), nil
+}
+
+// newInterceptors registers Pion's default RTP and RTCP helpers except one:
+// generated sender reports.
+//
+// A sender report ties a stream's RTP timestamps to wall-clock time, and
+// receivers line audio up with video by it (lip sync). Pion would stamp the
+// tracks the SFU sends with the time each packet was forwarded. Video waits
+// longer than audio in the sender's upload queue, so it would look as if it
+// was captured later than it was, and receivers would play audio ahead of
+// it. Instead the SFU forwards each publisher's own sender reports, which
+// carry capture time (see sfu.forwardSenderReports).
+func newInterceptors(media *webrtc.MediaEngine) (*interceptor.Registry, error) {
+	r := &interceptor.Registry{}
+	if err := webrtc.ConfigureNack(media, r); err != nil {
+		return nil, fmt.Errorf("register NACK: %w", err)
+	}
+	receiverReports, err := report.NewReceiverInterceptor()
+	if err != nil {
+		return nil, fmt.Errorf("register receiver reports: %w", err)
+	}
+	r.Add(receiverReports)
+	if err := webrtc.ConfigureSimulcastExtensionHeaders(media); err != nil {
+		return nil, fmt.Errorf("register simulcast headers: %w", err)
+	}
+	if err := webrtc.ConfigureStatsInterceptor(r); err != nil {
+		return nil, fmt.Errorf("register stats: %w", err)
+	}
+	if err := webrtc.ConfigureTWCCSender(media, r); err != nil {
+		return nil, fmt.Errorf("register TWCC: %w", err)
+	}
+	return r, nil
 }
 
 // Restricting codecs keeps forwarding simple: every participant sends and

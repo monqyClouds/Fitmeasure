@@ -110,7 +110,7 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer rs.leave(rm, p)
 	log.Info("room: joined", "others", len(others))
 
-	p.pub.OnTrack(func(remote *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+	p.pub.OnTrack(func(remote *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		log.Info("room: publishing track", "kind", remote.Kind(), "codec", remote.Codec().MimeType, "ssrc", remote.SSRC())
 		t, err := newUpTrack(p, remote)
 		if err != nil {
@@ -120,6 +120,12 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !rm.publish(t) {
 			return
 		}
+		go readSenderReports(receiver, remote, func(sr *rtcp.SenderReport) {
+			t.lastSenderReport.Store(sr)
+			for _, q := range rm.others(p) {
+				q.sendSenderReport(t, sr)
+			}
+		})
 		forward(remote, t.local)
 		rm.unpublish(t)
 	})
@@ -273,8 +279,9 @@ type upTrack struct {
 	remote *webrtc.TrackRemote
 	local  *webrtc.TrackLocalStaticRTP
 
-	closed          atomic.Bool
-	lastKeyframeAsk atomic.Int64 // UnixNano of the last keyframe request
+	closed           atomic.Bool
+	lastKeyframeAsk  atomic.Int64                      // UnixNano of the last keyframe request
+	lastSenderReport atomic.Pointer[rtcp.SenderReport] // the publisher's latest, for new subscribers
 }
 
 func newUpTrack(owner *participant, remote *webrtc.TrackRemote) (*upTrack, error) {
@@ -400,6 +407,20 @@ func (p *participant) unsubscribe(t *upTrack) {
 	p.negotiate()
 }
 
+// sendSenderReport passes a publisher's sender report for t on to p.
+func (p *participant) sendSenderReport(t *upTrack, sr *rtcp.SenderReport) {
+	p.mu.Lock()
+	sender := p.senders[t]
+	closed := p.closed
+	p.mu.Unlock()
+	if closed || sender == nil {
+		return
+	}
+	if out, ok := senderReportFor(sender, sr); ok {
+		_ = p.sub.WriteRTCP([]rtcp.Packet{out})
+	}
+}
+
 // negotiate sends a new offer on the subscribe connection describing the
 // tracks p should now receive. If an offer is already waiting for an answer,
 // it notes that another is needed instead.
@@ -447,9 +468,13 @@ func (p *participant) handleAnswer(sdp string) error {
 	}
 
 	// New tracks can't be decoded until a keyframe arrives; ask now rather
-	// than wait for the next periodic one or the subscriber's own PLI.
+	// than wait for the next periodic one or the subscriber's own PLI. And
+	// send the latest sender report, so lip sync doesn't wait for the next.
 	for _, t := range tracks {
 		t.requestKeyframe()
+		if sr := t.lastSenderReport.Load(); sr != nil {
+			p.sendSenderReport(t, sr)
+		}
 	}
 	if again {
 		p.negotiate()
