@@ -17,6 +17,10 @@ abstract final class SignalType {
   static const welcome = 'welcome';
   static const participantJoined = 'participant_joined';
   static const participantLeft = 'participant_left';
+
+  /// Client to server: how big each person's tile is on screen, so the
+  /// server can send each camera's simulcast layer that fits.
+  static const layout = 'layout';
 }
 
 abstract final class PeerName {
@@ -59,6 +63,17 @@ class CandidateInit {
   };
 }
 
+/// One person's tile on screen, in device pixels.
+class TileSize {
+  const TileSize({required this.id, required this.width, required this.height});
+
+  final String id;
+  final int width;
+  final int height;
+
+  Map<String, dynamic> toJson() => {'id': id, 'width': width, 'height': height};
+}
+
 class SignalMessage {
   const SignalMessage({
     required this.type,
@@ -70,6 +85,7 @@ class SignalMessage {
     this.participant,
     this.participants = const [],
     this.iceServers = const [],
+    this.tiles,
   });
 
   factory SignalMessage.decode(String text) {
@@ -110,10 +126,14 @@ class SignalMessage {
   final List<LiveParticipant> participants;
   final List<Map<String, dynamic>> iceServers;
 
+  /// In a layout: everyone on screen. Anyone missing gets no video.
+  final List<TileSize>? tiles;
+
   String encode() => jsonEncode({
     'type': type,
     'pc': ?pc,
     'sdp': ?sdp,
     if (candidate != null) 'candidate': candidate!.toJson(),
+    if (tiles != null) 'tiles': [for (final t in tiles!) t.toJson()],
   });
 }

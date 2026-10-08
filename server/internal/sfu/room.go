@@ -28,11 +28,9 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/monqyClouds/Fitmeasure/server/internal/signal"
@@ -110,24 +108,25 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer rs.leave(rm, p)
 	log.Info("room: joined", "others", len(others))
 
+	// OnTrack fires once per simulcast layer; the layers of one camera share
+	// a receiver, and become one upTrack.
 	p.pub.OnTrack(func(remote *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
-		log.Info("room: publishing track", "kind", remote.Kind(), "codec", remote.Codec().MimeType, "ssrc", remote.SSRC())
-		t, err := newUpTrack(p, remote)
-		if err != nil {
-			log.Error("room: create outgoing track", "err", err)
-			return
-		}
-		if !rm.publish(t) {
-			return
-		}
-		go readSenderReports(receiver, remote, func(sr *rtcp.SenderReport) {
-			t.lastSenderReport.Store(sr)
-			for _, q := range rm.others(p) {
-				q.sendSenderReport(t, sr)
+		log.Info("room: publishing track", "kind", remote.Kind(), "codec", remote.Codec().MimeType, "rid", remote.RID(), "ssrc", remote.SSRC())
+		t, first := p.upTrackFor(remote, receiver)
+		t.addLayer(remote)
+		if first {
+			if !rm.publish(t) {
+				return
 			}
-		})
-		forward(remote, t.local)
-		rm.unpublish(t)
+			if t.kind == webrtc.RTPCodecTypeVideo {
+				go t.watchLayers()
+			}
+		}
+		go t.readSenderReports(remote.RID())
+		t.readLayer(remote)
+		if p.layerEnded(t) {
+			rm.unpublish(t)
+		}
 	})
 
 	welcome := signal.Message{Type: signal.TypeWelcome, ID: p.id, Participants: others}
@@ -271,44 +270,6 @@ func broadcast(to []*participant, m signal.Message) {
 	}
 }
 
-// upTrack is one track a participant publishes: audio or video coming in from
-// their publish connection, plus the single outgoing track that carries it to
-// every subscriber.
-type upTrack struct {
-	owner  *participant
-	remote *webrtc.TrackRemote
-	local  *webrtc.TrackLocalStaticRTP
-
-	closed           atomic.Bool
-	lastKeyframeAsk  atomic.Int64                      // UnixNano of the last keyframe request
-	lastSenderReport atomic.Pointer[rtcp.SenderReport] // the publisher's latest, for new subscribers
-}
-
-func newUpTrack(owner *participant, remote *webrtc.TrackRemote) (*upTrack, error) {
-	// The stream ID is the owner's participant ID, so clients can match the
-	// track to a person. The track ID only has to be unique.
-	local, err := webrtc.NewTrackLocalStaticRTP(remote.Codec().RTPCodecCapability, owner.id+"-"+remote.ID(), owner.id)
-	if err != nil {
-		return nil, err
-	}
-	return &upTrack{owner: owner, remote: remote, local: local}, nil
-}
-
-// requestKeyframe asks the publisher's encoder for a keyframe (PLI), at most
-// once per keyframeInterval. Only the encoder can make one; the server just
-// passes on what subscribers' decoders ask for.
-func (t *upTrack) requestKeyframe() {
-	if t.remote.Kind() != webrtc.RTPCodecTypeVideo {
-		return
-	}
-	now := time.Now().UnixNano()
-	last := t.lastKeyframeAsk.Load()
-	if now-last < int64(keyframeInterval) || !t.lastKeyframeAsk.CompareAndSwap(last, now) {
-		return
-	}
-	_ = t.owner.pub.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(t.remote.SSRC())}})
-}
-
 // participant is one person in a room, with their signalling WebSocket and
 // two peer connections.
 type participant struct {
@@ -320,9 +281,13 @@ type participant struct {
 
 	mu            sync.Mutex
 	closed        bool
-	senders       map[*upTrack]*webrtc.RTPSender // what sub is sending them
-	offerInFlight bool                           // a subscribe offer awaits its answer
-	offerAgain    bool                           // tracks changed meanwhile; offer again after the answer
+	downs         map[*upTrack]*downTrack          // what sub is sending them
+	published     map[*webrtc.RTPReceiver]*upTrack // what pub is receiving from them
+	liveLayers    map[*upTrack]int                 // layers still arriving, per published track
+	tiles         map[string]signal.Tile           // their layout, by participant ID
+	haveLayout    bool                             // whether they've sent one
+	offerInFlight bool                             // a subscribe offer awaits its answer
+	offerAgain    bool                             // tracks changed meanwhile; offer again after the answer
 }
 
 func newParticipant(api *webrtc.API, iceServers []webrtc.ICEServer, id, name string, conn *signal.Conn, log *slog.Logger) (*participant, error) {
@@ -336,7 +301,12 @@ func newParticipant(api *webrtc.API, iceServers []webrtc.ICEServer, id, name str
 		pub.Close()
 		return nil, err
 	}
-	p := &participant{id: id, name: name, conn: conn, pub: pub, sub: sub, log: log, senders: make(map[*upTrack]*webrtc.RTPSender)}
+	p := &participant{
+		id: id, name: name, conn: conn, pub: pub, sub: sub, log: log,
+		downs:      make(map[*upTrack]*downTrack),
+		published:  make(map[*webrtc.RTPReceiver]*upTrack),
+		liveLayers: make(map[*upTrack]int),
+	}
 
 	for pcName, pc := range map[string]*webrtc.PeerConnection{signal.PCPublish: pub, signal.PCSubscribe: sub} {
 		pc.OnICECandidate(func(c *webrtc.ICECandidate) {
@@ -365,27 +335,62 @@ func (p *participant) close() {
 	_ = p.sub.Close()
 }
 
+// upTrackFor returns the upTrack for a receiver, creating it for the
+// receiver's first layer.
+func (p *participant) upTrackFor(remote *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) (*upTrack, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	t, ok := p.published[receiver]
+	if !ok {
+		t = newUpTrack(p, remote, receiver)
+		p.published[receiver] = t
+	}
+	p.liveLayers[t]++
+	return t, !ok
+}
+
+// layerEnded records that one of t's layers stopped, and reports whether
+// it was the last.
+func (p *participant) layerEnded(t *upTrack) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.liveLayers[t]--
+	if p.liveLayers[t] > 0 {
+		return false
+	}
+	delete(p.liveLayers, t)
+	delete(p.published, t.receiver)
+	return true
+}
+
 // subscribe starts sending t to p, then renegotiates.
 func (p *participant) subscribe(t *upTrack) {
 	p.mu.Lock()
 	// Checking t.closed under p.mu means unpublish, which sets it before
-	// calling unsubscribe (also under p.mu), can't miss this sender.
-	if p.closed || t.closed.Load() || p.senders[t] != nil {
+	// calling unsubscribe (also under p.mu), can't miss this subscriber.
+	if p.closed || t.closed.Load() || p.downs[t] != nil {
 		p.mu.Unlock()
 		return
 	}
-	sender, err := p.sub.AddTrack(t.local)
+	d, err := newDownTrack(t, p)
+	if err == nil {
+		d.sender, err = p.sub.AddTrack(d.local)
+	}
 	if err != nil {
 		p.mu.Unlock()
 		p.log.Warn("room: add track", "err", err)
 		return
 	}
-	p.senders[t] = sender
+	p.downs[t] = d
+	t.mu.Lock()
+	t.downs[p] = d
+	t.mu.Unlock()
 	p.mu.Unlock()
 
 	// The subscriber's RTCP for this track: NACKs are answered by the
 	// interceptors, keyframe requests go on to the publisher.
-	go relayKeyframeRequests(sender, t.requestKeyframe)
+	go relayKeyframeRequests(d.sender, d.requestKeyframe)
+	d.retarget()
 	p.negotiate()
 }
 
@@ -393,13 +398,16 @@ func (p *participant) subscribe(t *upTrack) {
 // stays in the SDP, marked inactive; Pion may reuse it for a later track.
 func (p *participant) unsubscribe(t *upTrack) {
 	p.mu.Lock()
-	sender := p.senders[t]
-	delete(p.senders, t)
-	if p.closed || sender == nil {
+	d := p.downs[t]
+	delete(p.downs, t)
+	t.mu.Lock()
+	delete(t.downs, p)
+	t.mu.Unlock()
+	if p.closed || d == nil {
 		p.mu.Unlock()
 		return
 	}
-	err := p.sub.RemoveTrack(sender)
+	err := p.sub.RemoveTrack(d.sender)
 	p.mu.Unlock()
 	if err != nil {
 		p.log.Warn("room: remove track", "err", err)
@@ -407,17 +415,33 @@ func (p *participant) unsubscribe(t *upTrack) {
 	p.negotiate()
 }
 
-// sendSenderReport passes a publisher's sender report for t on to p.
-func (p *participant) sendSenderReport(t *upTrack, sr *rtcp.SenderReport) {
+// tileSize is how big the owner's tile is on p's screen. haveTile is false
+// until p sends a layout; a person missing from it has size 0×0.
+func (p *participant) tileSize(owner string) (width, height int, haveTile bool) {
 	p.mu.Lock()
-	sender := p.senders[t]
-	closed := p.closed
-	p.mu.Unlock()
-	if closed || sender == nil {
-		return
+	defer p.mu.Unlock()
+	if !p.haveLayout {
+		return 0, 0, false
 	}
-	if out, ok := senderReportFor(sender, sr); ok {
-		_ = p.sub.WriteRTCP([]rtcp.Packet{out})
+	tile := p.tiles[owner]
+	return tile.Width, tile.Height, true
+}
+
+// setLayout records p's tile sizes and re-chooses every layer p receives.
+func (p *participant) setLayout(tiles []signal.Tile) {
+	p.mu.Lock()
+	p.haveLayout = true
+	p.tiles = make(map[string]signal.Tile, len(tiles))
+	for _, tile := range tiles {
+		p.tiles[tile.ID] = tile
+	}
+	downs := make([]*downTrack, 0, len(p.downs))
+	for _, d := range p.downs {
+		downs = append(downs, d)
+	}
+	p.mu.Unlock()
+	for _, d := range downs {
+		d.retarget()
 	}
 }
 
@@ -458,9 +482,9 @@ func (p *participant) handleAnswer(sdp string) error {
 	p.offerInFlight = false
 	again := p.offerAgain
 	p.offerAgain = false
-	tracks := make([]*upTrack, 0, len(p.senders))
-	for t := range p.senders {
-		tracks = append(tracks, t)
+	downs := make([]*downTrack, 0, len(p.downs))
+	for _, d := range p.downs {
+		downs = append(downs, d)
 	}
 	p.mu.Unlock()
 	if err != nil {
@@ -468,13 +492,9 @@ func (p *participant) handleAnswer(sdp string) error {
 	}
 
 	// New tracks can't be decoded until a keyframe arrives; ask now rather
-	// than wait for the next periodic one or the subscriber's own PLI. And
-	// send the latest sender report, so lip sync doesn't wait for the next.
-	for _, t := range tracks {
-		t.requestKeyframe()
-		if sr := t.lastSenderReport.Load(); sr != nil {
-			p.sendSenderReport(t, sr)
-		}
+	// than wait for the next periodic one or the subscriber's own PLI.
+	for _, d := range downs {
+		d.requestKeyframe()
 	}
 	if again {
 		p.negotiate()
@@ -537,6 +557,9 @@ func (p *participant) signal() error {
 				return err
 			}
 			addPending(signal.PCSubscribe)
+
+		case signal.TypeLayout:
+			p.setLayout(msg.Tiles)
 
 		case signal.TypeCandidate:
 			pc := pcs[msg.PC]

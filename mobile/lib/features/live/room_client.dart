@@ -6,7 +6,6 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'live_protocol.dart';
-import 'video_levels.dart';
 
 /// The live sessions server. Override for a local server with
 /// `--dart-define=LIVE_SERVER=http://192.168.0.134:8282`.
@@ -33,6 +32,19 @@ Future<bool> liveServerOnline() async {
 }
 
 enum RoomState { connecting, live, ended }
+
+/// Simulcast: the camera goes up as three layers at once, and the server
+/// sends each viewer the one that suits their tile. When the upload can't
+/// carry all three, the encoder stops the top layers by itself and resumes
+/// them when it can. "f" is the full 960×540 camera.
+final simulcastLayers = [
+  RTCRtpEncoding(rid: 'q', scaleResolutionDownBy: 4, maxBitrate: 150000),
+  RTCRtpEncoding(rid: 'h', scaleResolutionDownBy: 2, maxBitrate: 500000),
+  RTCRtpEncoding(rid: 'f', maxBitrate: 1200000),
+];
+
+/// The upload all three layers need, in kbit/s.
+const fullQualityKbps = 1850;
 
 /// Someone else in the room. Their camera and mic arrive on the subscribe
 /// connection, in a stream whose ID is their participant ID.
@@ -83,7 +95,8 @@ class LinkInfo {
   /// The bandwidth estimate for what we send.
   final int? uploadKbps;
 
-  /// e.g. "640×360 · 24 fps".
+  /// What each simulcast layer is sending, e.g. "q 240×135 · h 480×270 ·
+  /// f off".
   final String? sending;
 }
 
@@ -126,8 +139,10 @@ class RoomClient extends ChangeNotifier {
   final _pendingCandidates = <String, List<CandidateInit>>{};
   Future<void> _queue = Future.value();
   Timer? _statsTimer;
-  final _levels = VideoLevelPolicy();
-  bool _levelApplied = false;
+  // Tile sizes reported by the screen, sent to the server when they change.
+  final _tiles = <String, TileSize>{};
+  String _sentLayout = '';
+  Timer? _layoutTimer;
   bool _closed = false;
   bool _disposed = false;
 
@@ -218,6 +233,7 @@ class RoomClient extends ChangeNotifier {
 
       case SignalType.participantLeft:
         final p = participants.remove(msg.participant!.id);
+        _tiles.remove(msg.participant!.id);
         notifyListeners();
         await p?._dispose();
 
@@ -285,8 +301,19 @@ class RoomClient extends ChangeNotifier {
       p._attach(stream).then((_) => notifyListeners());
     };
 
-    for (final track in localStream.getTracks()) {
+    for (final track in localStream.getAudioTracks()) {
       await pub.addTrack(track, localStream);
+    }
+    for (final track in localStream.getVideoTracks()) {
+      await pub.addTransceiver(
+        track: track,
+        kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
+        init: RTCRtpTransceiverInit(
+          direction: TransceiverDirection.SendOnly,
+          streams: [localStream],
+          sendEncodings: simulcastLayers,
+        ),
+      );
     }
     final offer = await pub.createOffer();
     await pub.setLocalDescription(offer);
@@ -362,17 +389,23 @@ class RoomClient extends ChangeNotifier {
       }
     }
 
-    String? sending;
+    // One outbound stream per simulcast layer, smallest first.
+    final layers = <String, String>{};
     for (final r in reports) {
       if (r.type == 'outbound-rtp' && r.values['kind'] == 'video') {
         final w = r.values['frameWidth'];
         final h = r.values['frameHeight'];
-        final fps = r.values['framesPerSecond'];
-        if (w != null && h != null) {
-          sending = '$w×$h · ${(fps as num? ?? 0).round()} fps';
-        }
+        final fps = (r.values['framesPerSecond'] as num? ?? 0).round();
+        layers[r.values['rid'] as String? ?? ''] =
+            w != null && h != null && fps > 0 ? '$w×$h' : 'off';
       }
     }
+    final sending = layers.isEmpty
+        ? null
+        : [
+            for (final rid in ['q', 'h', 'f', ''])
+              if (layers[rid] case final v?) '$rid $v'.trim(),
+          ].join(' · ');
 
     link = LinkInfo(
       path: path,
@@ -382,26 +415,34 @@ class RoomClient extends ChangeNotifier {
       sending: sending,
     );
     notifyListeners();
-
-    if (!_levelApplied) {
-      _levelApplied = await _applyLevel(_levels.level);
-    } else if (_levels.sample(upload) case final level?) {
-      await _applyLevel(level);
-    }
   }
 
-  Future<bool> _applyLevel(int level) async {
-    final senders = await _pub?.getSenders() ?? const <RTCRtpSender>[];
-    final sender = senders.where((s) => s.track?.kind == 'video').firstOrNull;
-    if (sender == null) return false;
-    final params = sender.parameters;
-    final encodings = params.encodings;
-    if (encodings == null || encodings.isEmpty) return false;
-    encodings.first.scaleResolutionDownBy = videoLevels[level].scale;
-    // When the encoder must cut further, keep the frame rate (movement
-    // matters in a workout) and give up resolution.
-    params.degradationPreference = RTCDegradationPreference.MAINTAIN_FRAMERATE;
-    return sender.setParameters(params);
+  /// Records how big someone's tile is on screen, in device pixels. The
+  /// layout goes to the server shortly after tiles settle, and only when it
+  /// changed, so it can pick each camera's layer.
+  void reportTile(String id, int width, int height) {
+    final old = _tiles[id];
+    if (old != null && old.width == width && old.height == height) return;
+    _tiles[id] = TileSize(id: id, width: width, height: height);
+    _scheduleLayout();
+  }
+
+  void _scheduleLayout() {
+    _layoutTimer?.cancel();
+    _layoutTimer = Timer(const Duration(milliseconds: 250), _sendLayout);
+  }
+
+  void _sendLayout() {
+    if (_closed || myId == null) return;
+    final tiles = [
+      for (final t in _tiles.values)
+        if (participants.containsKey(t.id)) t,
+    ];
+    final key = [for (final t in tiles) '${t.id}:${t.width}x${t.height}']
+        .join(',');
+    if (key == _sentLayout) return;
+    _sentLayout = key;
+    _send(SignalMessage(type: SignalType.layout, tiles: tiles));
   }
 
   void setMic(bool on) {
@@ -435,6 +476,7 @@ class RoomClient extends ChangeNotifier {
     endReason = reason;
     state = RoomState.ended;
     _statsTimer?.cancel();
+    _layoutTimer?.cancel();
     notifyListeners();
 
     await _wsSub?.cancel();

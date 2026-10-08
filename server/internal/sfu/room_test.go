@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +18,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
+	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 
@@ -34,7 +38,12 @@ func startRooms(t *testing.T, max int) string {
 func serveRooms(t *testing.T, rooms *Rooms) string {
 	t.Helper()
 	rooms.API = newTestAPI(t)
-	rooms.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	// SFU_TEST_LOG=1 shows the server's log while debugging a test.
+	var logs io.Writer = io.Discard
+	if os.Getenv("SFU_TEST_LOG") != "" {
+		logs = os.Stderr
+	}
+	rooms.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	mux := http.NewServeMux()
 	mux.Handle("GET /ws/rooms/{room}", rooms)
 	srv := httptest.NewServer(mux)
@@ -46,6 +55,9 @@ func serveRooms(t *testing.T, rooms *Rooms) string {
 type received struct {
 	from    string
 	payload []byte
+	seq     uint16
+	ts      uint32
+	at      time.Time
 }
 
 // testPeer plays a browser in a room: it publishes a VP8 track whose payload
@@ -64,6 +76,14 @@ type testPeer struct {
 	// Sender reports about received streams whose SSRC matched the stream.
 	senderReports chan *rtcp.SenderReport
 
+	// Every video packet received, in order, for checking continuity.
+	videoMu  sync.Mutex
+	videoLog []received
+
+	// Simulcast layers by RID, when published with simulcast.
+	layers    map[string]*webrtc.TrackLocalStaticRTP
+	simSender *webrtc.RTPSender
+
 	closing atomic.Bool // set once the test is tearing down
 }
 
@@ -75,6 +95,17 @@ func joinRoom(t *testing.T, url, name string) *testPeer {
 // joinRoomWith joins with the ICE servers from the welcome and the given
 // policy; ICETransportPolicyRelay allows only paths through TURN.
 func joinRoomWith(t *testing.T, url, name string, policy webrtc.ICETransportPolicy) *testPeer {
+	t.Helper()
+	return joinRoomOpts(t, url, name, policy, false)
+}
+
+// joinRoomSimulcast publishes the camera as three layers; see publishLayersUntil.
+func joinRoomSimulcast(t *testing.T, url, name string) *testPeer {
+	t.Helper()
+	return joinRoomOpts(t, url, name, webrtc.ICETransportPolicyAll, true)
+}
+
+func joinRoomOpts(t *testing.T, url, name string, policy webrtc.ICETransportPolicy, simulcast bool) *testPeer {
 	t.Helper()
 	ws := dial(t, url+"?name="+name)
 	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -105,11 +136,31 @@ func joinRoomWith(t *testing.T, url, name string, policy webrtc.ICETransportPoli
 	}
 	t.Cleanup(func() { p.sub.Close() })
 
-	if p.track, err = webrtc.NewTrackLocalStaticSample(rtc.VP8, "video", name); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.pub.AddTrack(p.track); err != nil {
-		t.Fatal(err)
+	if simulcast {
+		p.layers = map[string]*webrtc.TrackLocalStaticRTP{}
+		var sender *webrtc.RTPSender
+		for _, rid := range []string{"q", "h", "f"} {
+			layer, err := webrtc.NewTrackLocalStaticRTP(rtc.VP8, "video", name, webrtc.WithRTPStreamID(rid))
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.layers[rid] = layer
+			if sender == nil {
+				if sender, err = p.pub.AddTrack(layer); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := sender.AddEncoding(layer); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p.simSender = sender
+	} else {
+		if p.track, err = webrtc.NewTrackLocalStaticSample(rtc.VP8, "video", name); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.pub.AddTrack(p.track); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	p.sub.OnTrack(func(remote *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
@@ -134,8 +185,14 @@ func joinRoomWith(t *testing.T, url, name string, policy webrtc.ICETransportPoli
 			if err != nil {
 				return
 			}
+			r := received{from: remote.StreamID(), payload: pkt.Payload, seq: pkt.SequenceNumber, ts: pkt.Timestamp, at: time.Now()}
+			if remote.Kind() == webrtc.RTPCodecTypeVideo {
+				p.videoMu.Lock()
+				p.videoLog = append(p.videoLog, r)
+				p.videoMu.Unlock()
+			}
 			select {
-			case p.media <- received{from: remote.StreamID(), payload: pkt.Payload}:
+			case p.media <- r:
 			default:
 			}
 		}
@@ -231,6 +288,82 @@ func (p *testPeer) readLoop() {
 func marker(id string) []byte { return []byte("fitmeasure-room-marker-" + id) }
 
 // publishUntil keeps writing p's marker until stop closes.
+// layerSizes are the picture sizes the test publisher's layers declare.
+var layerSizes = map[string][2]int{"q": {240, 136}, "h": {480, 270}, "f": {960, 540}}
+
+// publishLayersUntil sends each simulcast layer as VP8 frames whose payload
+// names the layer ("layer-q" …), with a keyframe declaring the layer's size
+// every tenth frame. It builds the RTP packets itself, because a receiver
+// tells simulcast layers apart by their MID and RID header extensions,
+// which browsers add but Pion's sending side leaves to the application.
+func (p *testPeer) publishLayersUntil(stop <-chan struct{}) {
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+
+	// The extension IDs and MID are only known once negotiated.
+	var midID, ridID uint8
+	var mid string
+	for midID == 0 || ridID == 0 || mid == "" {
+		select {
+		case <-stop:
+			return
+		case <-tick.C:
+		}
+		for _, ext := range p.simSender.GetParameters().HeaderExtensions {
+			switch ext.URI {
+			case sdp.SDESMidURI:
+				midID = uint8(ext.ID)
+			case sdp.SDESRTPStreamIDURI:
+				ridID = uint8(ext.ID)
+			}
+		}
+		for _, tr := range p.pub.GetTransceivers() {
+			if tr.Sender() == p.simSender {
+				mid = tr.Mid()
+			}
+		}
+	}
+
+	// Each layer numbers its packets differently; "h" wraps around soon.
+	seq := map[string]uint16{"q": 100, "h": 65500, "f": 30000}
+	ts := map[string]uint32{"q": 1_000, "h": 4_000_000_000, "f": 77}
+	for n := 0; ; n++ {
+		select {
+		case <-stop:
+			return
+		case <-tick.C:
+		}
+		for rid, layer := range p.layers {
+			// An interframe is one packet; a keyframe is three, like a
+			// real one split to fit the MTU, the last with the marker bit.
+			payloads := [][]byte{append([]byte{0x10, 0x01, 0x00, 0x00}, "layer-"+rid...)}
+			if n%10 == 0 {
+				size := layerSizes[rid]
+				payloads = [][]byte{
+					append([]byte{0x10, 0x00, 0x00, 0x00, 0x9d, 0x01, 0x2a,
+						byte(size[0]), byte(size[0] >> 8), byte(size[1]), byte(size[1] >> 8)}, "layer-"+rid...),
+					{0x00, 0xaa, 0xaa},
+					{0x00, 0xbb, 0xbb},
+				}
+			}
+			for i, payload := range payloads {
+				pkt := &rtp.Packet{
+					Header: rtp.Header{
+						Version: 2, PayloadType: 96, Marker: i == len(payloads)-1,
+						SequenceNumber: seq[rid], Timestamp: ts[rid],
+					},
+					Payload: payload,
+				}
+				_ = pkt.Header.SetExtension(midID, []byte(mid))
+				_ = pkt.Header.SetExtension(ridID, []byte(rid))
+				_ = layer.WriteRTP(pkt)
+				seq[rid]++
+			}
+			ts[rid] += 1800
+		}
+	}
+}
+
 func (p *testPeer) publishUntil(stop <-chan struct{}) {
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
@@ -408,6 +541,111 @@ func TestRoomForwardsSenderReports(t *testing.T) {
 			return
 		case <-deadline:
 			t.Fatal("no sender report reached the subscriber")
+		}
+	}
+}
+
+// layerSince returns which layers' frames b received from a since the given
+// index of its video log, and the log's new length.
+func (p *testPeer) layersSince(from string, i int) (map[string]int, int) {
+	p.videoMu.Lock()
+	defer p.videoMu.Unlock()
+	seen := map[string]int{}
+	for _, r := range p.videoLog[i:] {
+		if r.from != from {
+			continue
+		}
+		for rid := range layerSizes {
+			if bytes.Contains(r.payload, []byte("layer-"+rid)) {
+				seen[rid]++
+			}
+		}
+	}
+	return seen, len(p.videoLog)
+}
+
+// waitForLayer waits until b gets only the given layer of a's camera.
+func waitForLayer(t *testing.T, b *testPeer, from, rid string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	_, mark := b.layersSince(from, 0)
+	for time.Now().Before(deadline) {
+		time.Sleep(300 * time.Millisecond)
+		seen, next := b.layersSince(from, mark)
+		mark = next
+		if len(seen) == 1 && seen[rid] > 0 {
+			return
+		}
+	}
+	seen, _ := b.layersSince(from, 0)
+	t.Fatalf("never settled on layer %q; frames per layer overall: %v", rid, seen)
+}
+
+// A subscriber gets the layer that suits its tile, moves between layers as
+// the tile changes size, and gets nothing while it's off screen. Across the
+// switches, the stream it receives stays continuous: sequence numbers rise
+// by exactly one and timestamps never go back.
+func TestRoomSimulcastLayers(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	stop := make(chan struct{})
+	defer close(stop)
+
+	a := joinRoomSimulcast(t, url, "ada")
+	go a.publishLayersUntil(stop)
+	b := joinRoom(t, url, "bo")
+
+	// Without a layout, the middle layer.
+	waitForLayer(t, b, a.id, "h")
+
+	layout := func(tiles ...signal.Tile) {
+		b.send(signal.Message{Type: signal.TypeLayout, Tiles: tiles})
+	}
+	layout(signal.Tile{ID: a.id, Width: 1080, Height: 608})
+	waitForLayer(t, b, a.id, "f")
+	layout(signal.Tile{ID: a.id, Width: 300, Height: 170})
+	waitForLayer(t, b, a.id, "q")
+	layout(signal.Tile{ID: a.id, Width: 600, Height: 340})
+	waitForLayer(t, b, a.id, "h")
+
+	// Off screen: a is left out of the layout, and its video stops.
+	layout()
+	time.Sleep(500 * time.Millisecond)
+	_, mark := b.layersSince(a.id, 0)
+	time.Sleep(time.Second)
+	if seen, _ := b.layersSince(a.id, mark); len(seen) > 0 {
+		t.Fatalf("still receiving video while off screen: %v", seen)
+	}
+
+	// Sorted by sequence number (a lost packet's retransmission arrives
+	// late), the stream must have no gaps or repeats, and its timestamps
+	// must never go back.
+	b.videoMu.Lock()
+	defer b.videoMu.Unlock()
+	var stream []received
+	var ext int64 // sequence number extended past 16 bits
+	for _, r := range b.videoLog {
+		if r.from != a.id {
+			continue
+		}
+		if len(stream) == 0 {
+			ext = int64(r.seq)
+		} else {
+			ext += int64(int16(r.seq - stream[len(stream)-1].seq))
+		}
+		r.at = time.Unix(0, ext) // reuse the field to sort by
+		stream = append(stream, r)
+	}
+	if len(stream) == 0 {
+		t.Fatal("no video received")
+	}
+	sort.Slice(stream, func(i, j int) bool { return stream[i].at.Before(stream[j].at) })
+	for i := 1; i < len(stream); i++ {
+		prev, r := stream[i-1], stream[i]
+		if r.seq != prev.seq+1 {
+			t.Fatalf("sequence numbers jump from %d to %d", prev.seq, r.seq)
+		}
+		if int32(r.ts-prev.ts) < 0 {
+			t.Fatalf("timestamp goes back from %d to %d at sequence number %d", prev.ts, r.ts, r.seq)
 		}
 	}
 }

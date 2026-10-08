@@ -1,5 +1,4 @@
 import 'package:fitmeasure/features/live/live_protocol.dart';
-import 'package:fitmeasure/features/live/video_levels.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -50,7 +49,11 @@ void main() {
 
     test('encodes only what is set', () {
       expect(
-        const SignalMessage(type: SignalType.answer, pc: PeerName.subscribe, sdp: 'v=0').encode(),
+        const SignalMessage(
+          type: SignalType.answer,
+          pc: PeerName.subscribe,
+          sdp: 'v=0',
+        ).encode(),
         '{"type":"answer","pc":"subscribe","sdp":"v=0"}',
       );
       expect(
@@ -64,44 +67,17 @@ void main() {
     });
   });
 
-  group('VideoLevelPolicy', () {
-    test('starts at 640×360', () {
-      expect(videoLevels[VideoLevelPolicy().level].label, '640×360');
-    });
-
-    test('drops straight to the level that fits', () {
-      final p = VideoLevelPolicy(level: 0);
-      expect(p.sample(300), 2);
-      expect(p.sample(300), isNull);
-    });
-
-    test('climbs one level after three samples with headroom', () {
-      final p = VideoLevelPolicy(level: 2);
-      // 600 clears 450 × 1.3 = 585.
-      expect(p.sample(600), isNull);
-      expect(p.sample(600), isNull);
-      expect(p.sample(600), 1);
-      // Plenty of room for 960×540 still takes three more samples.
-      expect(p.sample(5000), isNull);
-      expect(p.sample(5000), isNull);
-      expect(p.sample(5000), 0);
-    });
-
-    test('a dip resets the climb', () {
-      final p = VideoLevelPolicy(level: 2);
-      p.sample(600);
-      p.sample(600);
-      p.sample(500); // fits 640×360 but without 30% headroom
-      expect(p.sample(600), isNull);
-      expect(p.sample(600), isNull);
-      expect(p.sample(600), 1);
-    });
-
-    test('ignores missing estimates', () {
-      final p = VideoLevelPolicy();
-      expect(p.sample(null), isNull);
-      expect(p.sample(0), isNull);
-      expect(p.level, VideoLevelPolicy.startLevel);
-    });
+  test('encodes a layout', () {
+    expect(
+      const SignalMessage(
+        type: SignalType.layout,
+        tiles: [TileSize(id: 'p1', width: 1080, height: 608)],
+      ).encode(),
+      '{"type":"layout","tiles":[{"id":"p1","width":1080,"height":608}]}',
+    );
+    expect(
+      const SignalMessage(type: SignalType.layout, tiles: []).encode(),
+      '{"type":"layout","tiles":[]}',
+    );
   });
 }

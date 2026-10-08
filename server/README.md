@@ -8,8 +8,8 @@ scratch on [Pion](https://github.com/pion/webrtc), in the stages described in
 |---|---|
 | S1. Echo: your camera goes to the server and comes back | ✅ |
 | S2. Small room: up to 4 people, everyone sees everyone | ✅ |
-| S3. Real networks: TURN, deployment, the Android app | built; the 30-minute phone-on-4G test is next |
-| S4. Simulcast | |
+| S3. Real networks: TURN, deployment, the Android app | built; the 30-minute phone-on-4G test is still to do |
+| S4. Simulcast | ✅ (see the notes below on switching down) |
 | S5. Bandwidth estimation | |
 | S6. Session features | |
 
@@ -174,7 +174,8 @@ anywhere but the SFU, and `internal/tlsmux` that port 443 is shared correctly.
 cmd/fitmeasure-server/   main: flags, HTTP routes
 internal/rtc/            the shared Pion API: codecs (VP8, Opus), interceptors, ICE settings
 internal/signal/         signalling messages (offer, answer, candidate) over a WebSocket
-internal/sfu/            media forwarding: echo.go is stage 1, room.go stage 2
+internal/sfu/            media forwarding: echo.go is stage 1, room.go stage 2,
+                         tracks.go and layers.go stage 4 (simulcast)
 internal/relay/          the TURN server and its short-lived credentials
 internal/tlsmux/         shares port 443 between HTTPS and TURN over TLS
 deploy/                  systemd unit, production settings and the deploy script
@@ -234,3 +235,27 @@ web/static/              plain JavaScript test pages for the stages
   under **Sending repairs** and **Receiving repairs**. To see them climb,
   add loss on Linux with `sudo tc qdisc add dev eth0 root netem loss 5%`
   (remove it with `sudo tc qdisc del dev eth0 root`).
+- **Simulcast** (stage 4, `tracks.go`, `layers.go`). Each camera goes up as
+  three layers at once: `q` (a quarter of the size), `h` (half) and `f`
+  (full). Every viewer has their own copy of each camera (a down track), and
+  the server picks the layer from the size of that person's tile on the
+  viewer's screen, which clients send in `layout` messages. Click or tap a
+  tile to enlarge it and watch its resolution change in the room page's
+  caption. If the sender's upload can't carry all three layers, the browser
+  stops the top ones and the server falls back to what's arriving.
+- **Switching layers.** The layers are separate RTP streams with their own
+  sequence numbers and timestamps, and a decoder can only start a stream at
+  a keyframe. To switch, the server asks the sender for a keyframe on the
+  new layer (PLI), keeps forwarding the old layer while the keyframe
+  arrives, and switches once the whole keyframe is in. It rewrites sequence
+  numbers and timestamps so the viewer sees one continuous stream, and
+  shifts forwarded sender reports by the same amount so lip sync holds.
+  Switching up (small to large) is seamless. Switching down can stutter for
+  about a quarter of a second: browsers answer a keyframe request with
+  keyframes on every layer, so the large layer being watched also gets one,
+  and it takes a moment to arrive.
+- **Header extensions are stripped** when forwarding. Their IDs are agreed
+  separately on each connection, so a publisher's ID can mean something
+  else on a viewer's connection. Simulcast packets carry MID and RID
+  extensions that would otherwise confuse the viewer.
+

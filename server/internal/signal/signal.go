@@ -26,6 +26,10 @@ const (
 	TypeWelcome           = "welcome"            // you joined: ID is yours, Participants are the others
 	TypeParticipantJoined = "participant_joined" // Participant arrived
 	TypeParticipantLeft   = "participant_left"   // Participant left
+
+	// Client to server: how big each person's tile is on screen, so the
+	// SFU can pick a simulcast layer for each.
+	TypeLayout = "layout"
 )
 
 // Peer connection names. In a room each participant has two: one to publish
@@ -52,6 +56,17 @@ type Message struct {
 	// ICEServers, in a welcome, are the STUN and TURN servers to give both
 	// peer connections, with credentials for this participant only.
 	ICEServers []webrtc.ICEServer `json:"iceServers,omitempty"`
+
+	// Tiles, in a layout, lists every person on screen. Anyone missing is
+	// off screen and gets no video.
+	Tiles []Tile `json:"tiles,omitempty"`
+}
+
+// Tile is the size of one person's video on screen, in device pixels.
+type Tile struct {
+	ID     string `json:"id"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
 }
 
 // Participant identifies someone in a room. Their tracks arrive in a media

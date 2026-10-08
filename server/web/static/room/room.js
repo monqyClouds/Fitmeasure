@@ -18,19 +18,20 @@ let subscribeOffers = 0;
 const names = new Map(); // participant ID → name
 const tiles = new Map(); // participant ID → { figure, video, caption }
 
-// Picture size against upload speed. Left alone, Chrome keeps sending
-// 960×540 even at 250 kbit/s, where it breaks into blocks; a smaller picture
-// at the same bitrate is much sharper. The camera still captures 960×540 and
-// the encoder scales it down. No bitrate cap per level, so the browser can
-// still probe for more bandwidth and the picture can grow again.
-const videoLevels = [
-  { scale: 1, minKbps: 1000, size: '960×540' },
-  { scale: 1.5, minKbps: 450, size: '640×360' },
-  { scale: 2, minKbps: 0, size: '480×270' },
+// Simulcast: the camera goes up as three layers at once, and the server
+// sends each viewer the one that suits their tile. When the upload can't
+// carry all three, the browser stops the top layers by itself and resumes
+// them when it can. "f" is the full 960×540 camera.
+const simulcastLayers = [
+  { rid: 'q', scaleResolutionDownBy: 4, maxBitrate: 150_000 },
+  { rid: 'h', scaleResolutionDownBy: 2, maxBitrate: 500_000 },
+  { rid: 'f', maxBitrate: 1_200_000 },
 ];
-const startLevel = 1; // 640×360 until the estimate shows there's room for more
-let videoLevel = null; // index into videoLevels once applied
-let levelUpVotes = 0;
+
+// Tile sizes last sent to the server, to send only changes.
+let lastLayout = '';
+let layoutTimer = null;
+const resizeObserver = new ResizeObserver(() => scheduleLayout());
 
 function log(text, kind = '') {
   const li = document.createElement('li');
@@ -86,6 +87,17 @@ function ensureTile(id) {
   const caption = document.createElement('figcaption');
   figure.append(video, caption);
   $('tiles').append(figure);
+  if (id !== me) {
+    // Click a tile to make it large (pin it), again to shrink it. The
+    // server switches its layer to match.
+    figure.title = 'Click to enlarge';
+    figure.onclick = () => {
+      const pinned = figure.classList.toggle('pinned');
+      figure.title = pinned ? 'Click to shrink' : 'Click to enlarge';
+      log(`${pinned ? 'Enlarged' : 'Shrank'} ${nameOf(id)}'s tile`);
+    };
+    resizeObserver.observe(figure);
+  }
   tile = { figure, video, caption, detail: '' };
   tiles.set(id, tile);
   renderCaption(id);
@@ -107,8 +119,34 @@ function removeTile(id) {
   const tile = tiles.get(id);
   if (!tile) return;
   tile.video.srcObject = null;
+  resizeObserver.unobserve(tile.figure);
   tile.figure.remove();
   tiles.delete(id);
+  scheduleLayout();
+}
+
+// Tells the server how big each person's tile is, in device pixels, so it
+// can pick each one's layer. Sent shortly after tiles settle, and only when
+// something changed.
+function scheduleLayout() {
+  clearTimeout(layoutTimer);
+  layoutTimer = setTimeout(sendLayout, 250);
+}
+
+function sendLayout() {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !me) return;
+  const dpr = window.devicePixelRatio || 1;
+  const list = [];
+  for (const [id, tile] of tiles) {
+    if (id === me) continue;
+    const r = tile.figure.getBoundingClientRect();
+    list.push({ id, width: Math.round(r.width * dpr), height: Math.round(r.height * dpr) });
+  }
+  const json = JSON.stringify(list);
+  if (json === lastLayout) return;
+  lastLayout = json;
+  send({ type: 'layout', tiles: list });
+  log(`Layout: ${list.map((t) => `${nameOf(t.id)} ${t.width}×${t.height}`).join(', ') || 'nobody on screen'}`, 'muted');
 }
 
 async function join(event) {
@@ -206,8 +244,15 @@ async function handle(msg) {
 
       createPeerConnections(msg.iceServers ?? []);
       ensureTile(me).video.srcObject = localStream;
-      for (const track of localStream.getTracks()) {
+      for (const track of localStream.getAudioTracks()) {
         pcs.publish.addTrack(track, localStream);
+      }
+      for (const track of localStream.getVideoTracks()) {
+        pcs.publish.addTransceiver(track, {
+          direction: 'sendonly',
+          streams: [localStream],
+          sendEncodings: simulcastLayers,
+        });
       }
       const offer = await pcs.publish.createOffer();
       await pcs.publish.setLocalDescription(offer);
@@ -253,8 +298,8 @@ function leave() {
   clearInterval(statsTimer);
   statsTimer = null;
   lastBytes = null;
-  videoLevel = null;
-  levelUpVotes = 0;
+  lastLayout = '';
+  clearTimeout(layoutTimer);
   if (localStream) {
     localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
@@ -294,24 +339,37 @@ async function showStats() {
   const rows = {};
   let sentBytes = 0;
   let receivedBytes = 0;
+  const sending = []; // one per simulcast layer
+  const repairs = { nacks: 0, resent: 0, plis: 0 };
 
   pub.forEach((s) => {
     if (s.type === 'outbound-rtp') sentBytes += s.bytesSent;
     if (s.type === 'outbound-rtp' && s.kind === 'video') {
-      rows['Sending'] = describeVideo(s);
-      setDetail(me, describeVideo(s));
+      sending.push(s);
       // NACK: the server asked us to resend lost packets. PLI: a receiver
       // couldn't decode and asked for a keyframe (relayed by the server).
-      rows['Sending repairs'] = `${s.nackCount ?? 0} NACKs, ${s.retransmittedPacketsSent ?? 0} packets resent, ${s.pliCount ?? 0} keyframe requests`;
+      repairs.nacks += s.nackCount ?? 0;
+      repairs.resent += s.retransmittedPacketsSent ?? 0;
+      repairs.plis += s.pliCount ?? 0;
     }
   });
+  // Each layer, smallest first; a layer the browser has stopped for lack of
+  // bandwidth shows as off.
+  const order = { q: 0, h: 1, f: 2 };
+  sending.sort((a, b) => (order[a.rid] ?? 0) - (order[b.rid] ?? 0));
+  rows['Sending'] = sending
+    .map((s) => `${s.rid ?? ''} ${s.active === false || !s.framesPerSecond ? 'off' : describeVideo(s)}`)
+    .join('  ·  ');
+  const top = sending.filter((s) => s.framesPerSecond).at(-1);
+  if (top) setDetail(me, `${top.rid} ${describeVideo(top)}`);
+  rows['Sending repairs'] = `${repairs.nacks} NACKs, ${repairs.resent} packets resent, ${repairs.plis} keyframe requests`;
+
   for (const [label, report] of [['Publish path', pub], ['Subscribe path', sub]]) {
     const path = describePath(report);
     if (!path) continue;
     rows[label] = path.text;
     if (label === 'Publish path' && path.rtt !== undefined) rows['Round trip'] = `${Math.round(path.rtt * 1000)} ms`;
     if (label === 'Publish path' && path.availableKbps) rows['Upload estimate'] = `${path.availableKbps} kbit/s`;
-    if (label === 'Publish path') adaptVideo(path.availableKbps).catch((err) => log(`Adapting video: ${err.message}`, 'bad'));
   }
 
   // Inbound video stats name the track; the track's stream is the sender.
@@ -381,49 +439,6 @@ function describePath(report) {
     // feedback (TWCC). Chrome reports it; Firefox doesn't.
     availableKbps: pair.availableOutgoingBitrate ? Math.round(pair.availableOutgoingBitrate / 1000) : null,
   };
-}
-
-// adaptVideo picks the picture size for the upload estimate: down at once
-// when the estimate falls, up one level at a time, and only after the
-// estimate has cleared the next level's bar by 30% for 3 seconds in a row.
-async function adaptVideo(availableKbps) {
-  const sender = pcs?.publish.getSenders().find((s) => s.track?.kind === 'video');
-  if (!sender) return;
-  if (videoLevel === null) {
-    await setVideoLevel(sender, startLevel, availableKbps);
-    return;
-  }
-  if (!availableKbps) return;
-  const fits = videoLevels.findIndex((l) => availableKbps >= l.minKbps);
-  if (fits > videoLevel) {
-    levelUpVotes = 0;
-    await setVideoLevel(sender, fits, availableKbps);
-  } else if (fits < videoLevel && availableKbps >= videoLevels[videoLevel - 1].minKbps * 1.3) {
-    if (++levelUpVotes >= 3) {
-      levelUpVotes = 0;
-      await setVideoLevel(sender, videoLevel - 1, availableKbps);
-    }
-  } else {
-    levelUpVotes = 0;
-  }
-}
-
-async function setVideoLevel(sender, level, availableKbps) {
-  const params = sender.getParameters();
-  if (!params.encodings?.length) return; // not negotiated yet
-  params.encodings[0].scaleResolutionDownBy = videoLevels[level].scale;
-  // When the encoder must cut further, keep the frame rate (movement matters
-  // in a workout) and give up resolution.
-  params.degradationPreference = 'maintain-framerate';
-  try {
-    await sender.setParameters(params);
-  } catch {
-    delete params.degradationPreference; // not supported everywhere
-    await sender.setParameters(params);
-  }
-  const why = availableKbps ? ` for an upload estimate of ${availableKbps} kbit/s` : '';
-  log(`Sending ${videoLevels[level].size}${why}`, videoLevel !== null && level > videoLevel ? 'bad' : '');
-  videoLevel = level;
 }
 
 function setDetail(id, detail) {

@@ -7,7 +7,6 @@ import '../../widgets/common.dart';
 import 'live_session_service.dart';
 import 'prejoin_screen.dart';
 import 'room_client.dart';
-import 'video_levels.dart';
 
 /// In a room: everyone else in a grid, yourself in a small floating tile,
 /// and the controls.
@@ -24,6 +23,9 @@ class _SessionScreenState extends State<SessionScreen> {
   final _self = RTCVideoRenderer();
   bool _selfReady = false;
   bool _closing = false;
+
+  /// The participant shown large, if any.
+  String? _pinned;
 
   @override
   void initState() {
@@ -105,7 +107,14 @@ class _SessionScreenState extends State<SessionScreen> {
                                 connecting:
                                     _client.state == RoomState.connecting,
                               )
-                            : _Grid(others: others),
+                            : _Grid(
+                                others: others,
+                                pinned: _pinned,
+                                onTap: (id) => setState(
+                                  () => _pinned = _pinned == id ? null : id,
+                                ),
+                                onSize: _client.reportTile,
+                              ),
                       ),
                       if (_selfReady)
                         _FloatingSelf(
@@ -180,16 +189,31 @@ class _TopBar extends StatelessWidget {
 }
 
 /// Everyone else, sized to fill the space: one fills it, two stack, three
-/// or four make a 2×2 grid.
+/// or four make a 2×2 grid. A pinned person fills the top, with the others
+/// in a strip below. Tap a tile to pin it, again to unpin.
 class _Grid extends StatelessWidget {
-  const _Grid({required this.others});
+  const _Grid({
+    required this.others,
+    required this.pinned,
+    required this.onTap,
+    required this.onSize,
+  });
+
   final List<RemoteParticipant> others;
+  final String? pinned;
+  final ValueChanged<String> onTap;
+
+  /// Each tile's size in device pixels, for the server to pick its layer.
+  final void Function(String id, int width, int height) onSize;
 
   @override
   Widget build(BuildContext context) {
-    final tiles = [
-      for (final p in others) _RemoteTile(key: ValueKey(p.id), participant: p),
-    ];
+    Widget tile(RemoteParticipant p) => _RemoteTile(
+      key: ValueKey(p.id),
+      participant: p,
+      onTap: () => onTap(p.id),
+      onSize: (w, h) => onSize(p.id, w, h),
+    );
     const gap = 6.0;
     Widget row(List<Widget> children) => Expanded(
       child: Row(
@@ -201,9 +225,24 @@ class _Grid extends StatelessWidget {
         ],
       ),
     );
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      child: switch (tiles.length) {
+
+    final pin = others.where((p) => p.id == pinned).firstOrNull;
+    final Widget body;
+    if (pin != null && others.length > 1) {
+      final rest = [
+        for (final p in others)
+          if (p != pin) tile(p),
+      ];
+      body = Column(
+        children: [
+          Expanded(flex: 3, child: tile(pin)),
+          const SizedBox(height: gap),
+          row(rest),
+        ],
+      );
+    } else {
+      final tiles = [for (final p in others) tile(p)];
+      body = switch (tiles.length) {
         1 => tiles.first,
         2 => Column(
           children: [
@@ -219,28 +258,57 @@ class _Grid extends StatelessWidget {
             row(tiles.sublist(2)),
           ],
         ),
-      },
+      };
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      child: body,
     );
   }
 }
 
 class _RemoteTile extends StatelessWidget {
-  const _RemoteTile({super.key, required this.participant});
+  const _RemoteTile({
+    super.key,
+    required this.participant,
+    required this.onTap,
+    required this.onSize,
+  });
+
   final RemoteParticipant participant;
+  final VoidCallback onTap;
+  final void Function(int width, int height) onSize;
 
   @override
   Widget build(BuildContext context) {
     final p = participant;
     final name = p.name.isEmpty ? 'Joining…' : p.name;
-    return _Tile(
-      name: name,
-      video: p.stream != null && p.hasVideo
-          ? RTCVideoView(
-              p.renderer,
-              objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-              placeholderBuilder: (_) => _Placeholder(name: name),
-            )
-          : _Placeholder(name: name),
+    final ratio = MediaQuery.devicePixelRatioOf(context);
+    return LayoutBuilder(
+      builder: (context, box) {
+        // Report the size once this frame is laid out; the client only
+        // sends it on when it changed.
+        final size = box.biggest;
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => onSize(
+            (size.width * ratio).round(),
+            (size.height * ratio).round(),
+          ),
+        );
+        return GestureDetector(
+          onTap: onTap,
+          child: _Tile(
+            name: name,
+            video: p.stream != null && p.hasVideo
+                ? RTCVideoView(
+                    p.renderer,
+                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                    placeholderBuilder: (_) => _Placeholder(name: name),
+                  )
+                : _Placeholder(name: name),
+          ),
+        );
+      },
     );
   }
 }
@@ -497,7 +565,7 @@ void _showLinkSheet(BuildContext context, RoomClient client) {
         // How the upload estimate compares with what full quality needs.
         final fill = upload == null
             ? 0.0
-            : (upload / videoLevels.first.minKbps).clamp(0.0, 1.0);
+            : (upload / fullQualityKbps).clamp(0.0, 1.0);
         return Padding(
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),
           child: Column(
@@ -529,7 +597,7 @@ void _showLinkSheet(BuildContext context, RoomClient client) {
                 upload == null
                     ? 'Measuring…'
                     : '$upload kbit/s · full quality needs '
-                          '${videoLevels.first.minKbps}',
+                          '$fullQualityKbps',
                 style: t.bodySmall!.copyWith(color: AppColors.textSecondary),
               ),
               const SizedBox(height: 16),
