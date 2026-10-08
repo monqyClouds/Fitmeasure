@@ -101,6 +101,49 @@ class FormVideoStrip extends StatelessWidget {
   }
 }
 
+/// An exercise's form videos in a sheet, for a quick look mid-workout.
+Future<void> showFormVideos(
+  BuildContext context,
+  String exerciseName,
+  List<MediaItem> links,
+  Color color,
+) => showModalBottomSheet<void>(
+  context: context,
+  showDragHandle: true,
+  builder: (sheet) => SafeArea(
+    child: Padding(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+            child: Text(
+              exerciseName,
+              style: Theme.of(sheet).textTheme.titleLarge,
+            ),
+          ),
+          SizedBox(
+            height: FormVideoStrip.cardWidth * 9 / 16 + 56,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              itemCount: links.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 12),
+              itemBuilder: (_, i) => VideoLinkCard(
+                key: ValueKey(links[i].id),
+                link: links[i],
+                color: color,
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  ),
+);
+
 /// A video link as a thumbnail card. Looks up the link's picture and title
 /// the first time it's shown, if that wasn't done when it was added.
 class VideoLinkCard extends ConsumerStatefulWidget {

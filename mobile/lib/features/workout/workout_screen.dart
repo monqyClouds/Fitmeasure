@@ -12,8 +12,10 @@ import '../../domain/units.dart';
 import '../../widgets/common.dart';
 import '../../widgets/motion.dart';
 import '../../widgets/visuals.dart';
+import '../library/exercise_detail_screen.dart';
 import '../library/exercise_picker_screen.dart';
 import '../library/muscle_icon.dart';
+import '../library/video_links.dart';
 import '../plans/targets_sheet.dart';
 import 'rest_timer.dart';
 import 'session_detail_screen.dart';
@@ -505,6 +507,13 @@ class _ExerciseCard extends ConsumerWidget {
           if (!ok) return;
         }
         await repo.removeExercise(we.entry);
+      case 'details':
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ExerciseDetailScreen(exerciseId: we.exercise.id),
+          ),
+        );
     }
   }
 
@@ -519,6 +528,12 @@ class _ExerciseCard extends ConsumerWidget {
     final done = we.sets.length;
     final complete = rows > 0 && done >= rows;
     final lastRowPending = rows > 1 && we.logged(rows) == null;
+    final videos = [
+      for (final m
+          in ref.watch(exerciseMediaProvider(e.id)).value ??
+              const <MediaItem>[])
+        if (m.kind == MediaKind.link) m,
+    ];
     final lastText = [
       for (final s in last.take(4))
         describeSet(
@@ -584,6 +599,14 @@ class _ExerciseCard extends ConsumerWidget {
                   ],
                 ),
               ),
+              if (videos.isNotEmpty)
+                IconButton(
+                  tooltip: 'Watch form',
+                  onPressed: () => videos.length == 1
+                      ? openVideoLink(context, videos.single)
+                      : showFormVideos(context, e.name, videos, color),
+                  icon: Icon(Icons.smart_display_rounded, color: color),
+                ),
               ProgressRing(
                 value: rows == 0 ? 0 : done / rows,
                 color: color,
@@ -609,6 +632,12 @@ class _ExerciseCard extends ConsumerWidget {
                       value: 'remove_set',
                       child: Text('Remove last set'),
                     ),
+                  PopupMenuItem(
+                    value: 'details',
+                    child: Text(
+                      videos.isEmpty ? 'Add a form video' : 'Exercise details',
+                    ),
+                  ),
                   const PopupMenuItem(
                     value: 'remove',
                     child: Text('Remove exercise'),

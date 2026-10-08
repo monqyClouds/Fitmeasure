@@ -6,6 +6,7 @@ import 'package:fitmeasure/app/app.dart';
 import 'package:fitmeasure/app/providers.dart';
 import 'package:fitmeasure/data/backup/backup_service.dart';
 import 'package:fitmeasure/data/db/database.dart';
+import 'package:fitmeasure/data/repos/exercise_repo.dart';
 import 'package:fitmeasure/data/repos/profile_repo.dart';
 import 'package:fitmeasure/data/repos/settings_repo.dart';
 import 'package:fitmeasure/features/cycles/cycle_editor_screen.dart';
@@ -132,6 +133,15 @@ void main() {
     );
     addTearDown(db.close);
     final pid = await ProfileRepo(db).create(name: 'Sam', color: 0xFFB8F34A);
+    final bench = await (db.select(
+      db.exercises,
+    )..where((e) => e.name.equals('Bench Press'))).getSingle();
+    await ExerciseRepo(db).addLink(
+      exerciseId: bench.id,
+      profileId: pid,
+      url: 'https://youtu.be/dQw4w9WgXcQ',
+      thumbUrl: '',
+    );
     final container = ProviderContainer(
       overrides: [databaseProvider.overrideWithValue(db)],
     );
@@ -167,6 +177,8 @@ void main() {
     expect(find.byType(WorkoutScreen), findsOneWidget);
     expect(find.text('Bench Press'), findsOneWidget);
     expect(find.text('of 15 sets'), findsOneWidget);
+    // Only the bench press has a form video.
+    expect(find.byTooltip('Watch form'), findsOneWidget);
 
     // Tick off the first set; its reps are prefilled from the target.
     await tester.tap(find.byIcon(Icons.check_rounded).first);
