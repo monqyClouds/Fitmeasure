@@ -7,8 +7,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../data/repos/session_repo.dart';
+import '../../data/repos/settings_repo.dart';
 import '../../domain/interval_clock.dart';
 import '../../domain/units.dart';
+import '../../services/beeper.dart';
 import '../../widgets/timer_face.dart';
 
 const restColor = Color(0xFF5AA9FF);
@@ -75,15 +77,16 @@ class _SetTimerScreenState extends ConsumerState<SetTimerScreen> {
     for (final p in ended) {
       if (p.kind == PhaseKind.work) _log(p.setNumber!, p.seconds);
     }
+    final beeper = ref.read(beeperProvider);
     if (ended.isNotEmpty) {
       HapticFeedback.heavyImpact();
-      SystemSound.play(SystemSoundType.alert);
+      _clock.done ? beeper.done() : beeper.go();
     } else if (_clock.running) {
-      // A tap for each of the last three seconds.
+      // A beep for each of the last three seconds.
       final secs = (_clock.left(now).inMilliseconds / 1000).ceil();
       if (secs != _lastSecond && secs <= 3 && secs > 0) {
         HapticFeedback.lightImpact();
-        SystemSound.play(SystemSoundType.click);
+        beeper.tick();
       }
       _lastSecond = secs;
     }
@@ -119,7 +122,12 @@ class _SetTimerScreenState extends ConsumerState<SetTimerScreen> {
       final done = skipped!.seconds - left.inSeconds;
       if (done > 0) _log(skipped.setNumber!, done);
     }
-    if (_clock.done) _tick?.cancel();
+    if (_clock.done) {
+      _tick?.cancel();
+      ref.read(beeperProvider).done();
+    } else {
+      ref.read(beeperProvider).go();
+    }
     HapticFeedback.mediumImpact();
     setState(() {});
   }
@@ -149,6 +157,9 @@ class _SetTimerScreenState extends ConsumerState<SetTimerScreen> {
           onPressed: () => Navigator.pop(context),
         ),
         title: Text(widget.we.exercise.name),
+        actions: [
+          _SoundToggle(on: ref.watch(timerSoundsProvider).value ?? true),
+        ],
       ),
       body: AnimatedContainer(
         duration: Motion.slow,
@@ -248,6 +259,20 @@ class _SetTimerScreenState extends ConsumerState<SetTimerScreen> {
       ),
     );
   }
+}
+
+/// Mutes or unmutes the timers' beeps (the same switch as in Settings).
+class _SoundToggle extends ConsumerWidget {
+  const _SoundToggle({required this.on});
+  final bool on;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => IconButton(
+    tooltip: on ? 'Mute beeps' : 'Turn beeps on',
+    icon: Icon(on ? Icons.volume_up_rounded : Icons.volume_off_rounded),
+    onPressed: () =>
+        ref.read(settingsRepoProvider).setBool(SettingsRepo.timerSounds, !on),
+  );
 }
 
 class _Finished extends StatelessWidget {

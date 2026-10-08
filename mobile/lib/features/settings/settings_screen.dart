@@ -10,6 +10,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../services/beeper.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../data/backup/backup_service.dart';
@@ -391,17 +392,39 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               color: AppColors.surface,
               borderRadius: BorderRadius.circular(Radii.tile),
               clipBehavior: Clip.antiAlias,
-              child: SwitchListTile(
-                value: keepAwake,
-                onChanged: (v) => ref
-                    .read(settingsRepoProvider)
-                    .setBool(SettingsRepo.keepAwake, v),
-                secondary: const Icon(Icons.light_mode_outlined),
-                title: Text('Keep screen on', style: t.titleSmall),
-                subtitle: Text(
-                  'While a workout is open, so the rest timer stays in view',
-                  style: t.bodySmall!.copyWith(color: AppColors.textSecondary),
-                ),
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    value: keepAwake,
+                    onChanged: (v) => ref
+                        .read(settingsRepoProvider)
+                        .setBool(SettingsRepo.keepAwake, v),
+                    secondary: const Icon(Icons.light_mode_outlined),
+                    title: Text('Keep screen on', style: t.titleSmall),
+                    subtitle: Text(
+                      'While a workout is open, so the rest timer stays in '
+                      'view',
+                      style: t.bodySmall!.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ),
+                  SwitchListTile(
+                    value: ref.watch(timerSoundsProvider).value ?? true,
+                    onChanged: (v) => ref
+                        .read(settingsRepoProvider)
+                        .setBool(SettingsRepo.timerSounds, v),
+                    secondary: const Icon(Icons.volume_up_outlined),
+                    title: Text('Timer sounds', style: t.titleSmall),
+                    subtitle: Text(
+                      'Beeps for the last seconds of sets, rest and breaks, '
+                      'over your music',
+                      style: t.bodySmall!.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 26),
@@ -416,7 +439,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     leading: const Icon(Icons.lock_outline_rounded),
                     title: Text('Your data stays here', style: t.titleSmall),
                     subtitle: Text(
-                      'Nothing is uploaded. Back up to keep a copy '
+                      'Nothing is uploaded unless you share an exercise or '
+                      'plan, or join a live session. Back up to keep a copy '
                       'elsewhere.',
                       style: t.bodySmall!.copyWith(
                         color: AppColors.textSecondary,

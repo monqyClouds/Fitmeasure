@@ -2,9 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
 import '../../domain/units.dart';
+import '../../services/beeper.dart';
 import '../../widgets/common.dart';
 import '../../widgets/timer_face.dart';
 import 'live_protocol.dart';
@@ -15,15 +17,15 @@ const _breakColor = Color(0xFF3DD6C6);
 
 /// The room's workout, above the videos: the current step's countdown, what
 /// it is and what's next. The host and moderators also get its controls.
-class WorkoutPanel extends StatefulWidget {
+class WorkoutPanel extends ConsumerStatefulWidget {
   const WorkoutPanel({super.key, required this.client});
   final RoomClient client;
 
   @override
-  State<WorkoutPanel> createState() => _WorkoutPanelState();
+  ConsumerState<WorkoutPanel> createState() => _WorkoutPanelState();
 }
 
-class _WorkoutPanelState extends State<WorkoutPanel> {
+class _WorkoutPanelState extends ConsumerState<WorkoutPanel> {
   Timer? _tick;
   int? _lastStep;
   int? _lastSecond;
@@ -35,11 +37,12 @@ class _WorkoutPanelState extends State<WorkoutPanel> {
       if (!mounted) return;
       final w = widget.client.workout;
       if (w == null) return;
-      // A tap for each of the last three seconds, and a thump when the step
-      // changes, so nobody has to watch the screen.
+      // A beep for each of the last three seconds, and a double beep when
+      // the step changes, so nobody has to watch the screen.
+      final beeper = ref.read(beeperProvider);
       if (_lastStep != null && _lastStep != w.index) {
         HapticFeedback.heavyImpact();
-        SystemSound.play(SystemSoundType.alert);
+        w.step == null ? beeper.done() : beeper.go();
       }
       _lastStep = w.index;
       final step = w.step;
@@ -50,7 +53,7 @@ class _WorkoutPanelState extends State<WorkoutPanel> {
                 .ceil();
         if (secs != _lastSecond && secs <= 3 && secs > 0) {
           HapticFeedback.lightImpact();
-          SystemSound.play(SystemSoundType.click);
+          beeper.tick();
         }
         _lastSecond = secs;
       }

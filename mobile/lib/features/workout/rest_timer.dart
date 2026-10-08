@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
 import '../../domain/units.dart';
+import '../../services/beeper.dart';
 import '../../widgets/visuals.dart';
 
 class RestState {
@@ -58,6 +59,7 @@ class RestTimerBar extends ConsumerStatefulWidget {
 class _RestTimerBarState extends ConsumerState<RestTimerBar> {
   Timer? _tick;
   RestState? _buzzedFor;
+  int? _lastSecond;
 
   @override
   void dispose() {
@@ -75,8 +77,14 @@ class _RestTimerBarState extends ConsumerState<RestTimerBar> {
         final current = ref.read(restTimerProvider);
         if (current == null) return;
         final now = DateTime.now();
-        if (current.remainingSec(now) == 0 && _buzzedFor != current) {
+        final left = current.remainingSec(now);
+        if (left != _lastSecond && left > 0 && left <= 3) {
+          ref.read(beeperProvider).tick();
+        }
+        _lastSecond = left;
+        if (left == 0 && _buzzedFor != current) {
           _buzzedFor = current;
+          ref.read(beeperProvider).go();
           HapticFeedback.vibrate();
           Future.delayed(const Duration(milliseconds: 400), () {
             HapticFeedback.vibrate();

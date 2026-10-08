@@ -3,6 +3,8 @@ package com.fitmeasure.fitmeasure
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Build
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -35,6 +37,37 @@ class MainActivity : FlutterActivity() {
             }
         }
         LiveSessionService.onLeave = { channel.invokeMethod("leave", null) }
+
+        // Timer beeps for lib/services/beeper.dart. ToneGenerator plays on
+        // the media stream without taking audio focus or changing the audio
+        // mode, so music carries on underneath and a live session's call
+        // audio isn't disturbed.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fitmeasure/beep")
+            .setMethodCallHandler { call, result ->
+                val (tone, ms) = when (call.method) {
+                    "tick" -> ToneGenerator.TONE_PROP_BEEP to 120
+                    "go" -> ToneGenerator.TONE_PROP_BEEP2 to 450
+                    "done" -> ToneGenerator.TONE_CDMA_CONFIRM to 900
+                    else -> {
+                        result.notImplemented()
+                        return@setMethodCallHandler
+                    }
+                }
+                beep(tone, ms)
+                result.success(null)
+            }
+    }
+
+    private var tones: ToneGenerator? = null
+
+    private fun beep(tone: Int, ms: Int) {
+        try {
+            val t = tones ?: ToneGenerator(AudioManager.STREAM_MUSIC, 90).also { tones = it }
+            t.startTone(tone, ms)
+        } catch (e: RuntimeException) {
+            // No tone generator (audio busy or unavailable): stay silent.
+            tones = null
+        }
     }
 
     /**
@@ -50,6 +83,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        tones?.release()
+        tones = null
         LiveSessionService.onLeave = null
         super.onDestroy()
     }

@@ -6,6 +6,7 @@ class SettingsRepo {
   final AppDatabase _db;
 
   static const keepAwake = 'keep_screen_on_during_workouts';
+  static const timerSounds = 'timer_sounds';
 
   Stream<bool> watchBool(String key, {bool fallback = false}) =>
       (_db.select(_db.appSettings)..where((s) => s.key.equals(key)))
