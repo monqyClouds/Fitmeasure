@@ -48,6 +48,10 @@ type Message struct {
 	ID           string        `json:"id,omitempty"`
 	Participant  *Participant  `json:"participant,omitempty"`
 	Participants []Participant `json:"participants,omitempty"`
+
+	// ICEServers, in a welcome, are the STUN and TURN servers to give both
+	// peer connections, with credentials for this participant only.
+	ICEServers []webrtc.ICEServer `json:"iceServers,omitempty"`
 }
 
 // Participant identifies someone in a room. Their tracks arrive in a media

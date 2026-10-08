@@ -8,7 +8,7 @@ scratch on [Pion](https://github.com/pion/webrtc), in the stages described in
 |---|---|
 | S1. Echo: your camera goes to the server and comes back | ✅ |
 | S2. Small room: up to 4 people, everyone sees everyone | ✅ |
-| S3. Real networks: TURN, deployment, the Android app | next |
+| S3. Real networks: TURN, deployment, the Android app | in progress: TURN and deployment done, Android app next |
 | S4. Simulcast | |
 | S5. Bandwidth estimation | |
 | S6. Session features | |
@@ -58,17 +58,80 @@ which beat `.env`.
 
 | Flag | Variable | Default | Meaning |
 |---|---|---|---|
-| `-addr` | `FITMEASURE_ADDR` | `:8080` | HTTP listen address |
+| `-addr` | `FITMEASURE_ADDR` | `:8080` | HTTP listen address (unused with `-domain`) |
 | `-udp-port` | `FITMEASURE_UDP_PORT` | `0` | One UDP port for all media. `0` uses a random port per connection, which is fine on a LAN. A server behind a firewall should set one, e.g. `7882`. |
-| `-public-ip` | `FITMEASURE_PUBLIC_IP` | | Public IP to advertise, for servers behind 1:1 NAT (most cloud VMs) |
+| `-tcp-port` | `FITMEASURE_TCP_PORT` | `0` | Also accept media over TCP on this port, for networks that block UDP. `0` is off. |
+| `-public-ip` | `FITMEASURE_PUBLIC_IP` | | Public IP to advertise in ICE candidates; TURN relays from it and only to it. Required for TURN. |
 | `-stun` | `FITMEASURE_STUN` | | Comma-separated STUN URLs for the server's own connections |
-| `-tls-cert`, `-tls-key` | `FITMEASURE_TLS_CERT`, `FITMEASURE_TLS_KEY` | | Serve HTTPS |
+| `-tls-cert`, `-tls-key` | `FITMEASURE_TLS_CERT`, `FITMEASURE_TLS_KEY` | | Serve HTTPS with these files |
+| `-domain` | `FITMEASURE_DOMAIN` | | Serve HTTPS for this domain on port 443 with an automatic Let's Encrypt certificate, and redirect port 80 |
+| `-acme-email` | `FITMEASURE_ACME_EMAIL` | | Email Let's Encrypt may contact about certificates |
+| `-cert-dir` | `FITMEASURE_CERT_DIR` | `certs` | Where Let's Encrypt certificates are kept |
+| `-turn-port` | `FITMEASURE_TURN_PORT` | `0` | Run TURN over UDP and TCP on this port, usually `3478`. `0` is off. |
+| `-turn-domain` | `FITMEASURE_TURN_DOMAIN` | | Also serve TURN over TLS on port 443 for this hostname. Needs `-domain`. |
+| `-turn-relay-ports` | `FITMEASURE_TURN_RELAY_PORTS` | `50000-50199` | UDP ports TURN relays from |
 
 For example, to use port 8282 locally:
 
 ```sh
 echo 'FITMEASURE_ADDR=:8282' > .env
 ```
+
+### TURN on your own network
+
+To try TURN locally, give the server your computer's LAN IP and a TURN port,
+then tick **Relay only** on the room page so every packet goes through it:
+
+```sh
+go run ./cmd/fitmeasure-server -public-ip 192.168.0.134 -turn-port 3478
+```
+
+The page's **Publish path** and **Subscribe path** then read
+`relay via TURN over udp …`.
+
+## Deploy
+
+The server runs as one binary on a Linux machine with a public IP. It serves
+HTTPS and TURN over TLS together on port 443, sorting connections by the
+hostname the client asks for (`internal/tlsmux`), and gets its certificates
+from Let's Encrypt by itself. So nothing else is needed in front of it.
+
+### First time
+
+1. **DNS:** point two A records at the droplet's public IPv4 address:
+   `live.somto.si` (the site) and `turn.somto.si` (TURN over TLS).
+2. **Firewall:** in DigitalOcean's cloud firewall, or with `ufw` on the
+   droplet, allow inbound:
+
+   | Port | Protocol | For |
+   |---|---|---|
+   | 22 | TCP | SSH |
+   | 80, 443 | TCP | HTTPS, Let's Encrypt, TURN over TLS |
+   | 3478 | UDP and TCP | TURN |
+   | 7882 | UDP | media straight to the SFU |
+   | 7881 | TCP | media over TCP |
+
+   The TURN relay ports (50000–50199) don't need opening: relayed media only
+   travels from the TURN server to the SFU, inside the droplet.
+3. **Settings:** on the droplet, create `/etc/fitmeasure/fitmeasure.env` from
+   [`deploy/fitmeasure.env.example`](deploy/fitmeasure.env.example), with the
+   droplet's public IP filled in.
+4. **Install:** from this directory, run
+
+   ```sh
+   deploy/deploy.sh root@live.somto.si
+   ```
+
+   It builds for Linux, copies the binary and the systemd unit
+   ([`deploy/fitmeasure.service`](deploy/fitmeasure.service)), and starts the
+   service. The first HTTPS request fetches the certificates, which takes a
+   few seconds.
+
+Then open <https://live.somto.si>. Logs: `journalctl -u fitmeasure -f`.
+
+### Updates
+
+Run `deploy/deploy.sh root@live.somto.si` again.
 
 ## Test
 
@@ -79,6 +142,9 @@ go test -race ./...
 
 `internal/sfu/echo_test.go` connects a Pion peer to the echo the same way a
 browser does, sends VP8 video, and checks that the same payload comes back.
+`room_test.go` does the same for rooms, including one where clients may only
+connect through TURN. `internal/relay` checks the TURN server refuses to relay
+anywhere but the SFU, and `internal/tlsmux` that port 443 is shared correctly.
 
 ## Layout
 
@@ -87,6 +153,9 @@ cmd/fitmeasure-server/   main: flags, HTTP routes
 internal/rtc/            the shared Pion API: codecs (VP8, Opus), interceptors, ICE settings
 internal/signal/         signalling messages (offer, answer, candidate) over a WebSocket
 internal/sfu/            media forwarding: echo.go is stage 1, room.go stage 2
+internal/relay/          the TURN server and its short-lived credentials
+internal/tlsmux/         shares port 443 between HTTPS and TURN over TLS
+deploy/                  systemd unit, production settings and the deploy script
 web/static/              plain JavaScript test pages for the stages
 ```
 
@@ -124,3 +193,22 @@ web/static/              plain JavaScript test pages for the stages
   every other at full quality, so the server's upload grows with the square of
   the room size. Simulcast (stage 4) and bandwidth estimation (stage 5)
   address that.
+- **ICE candidate types** (stage 3). Each side lists every address it might
+  be reached at: `host` (its own network addresses), `srflx` ("server
+  reflexive": its public address as a STUN server saw it), and `relay` (an
+  address on a TURN server). ICE tries pairs and keeps the best that works,
+  preferring host, then srflx, then relay. The room page shows the chosen
+  pair for each connection under **Publish path** and **Subscribe path**.
+- **TURN** (`internal/relay`). For networks where nothing direct works, the
+  client sends media to the TURN server, which relays it to the SFU. Clients
+  are offered TURN over UDP, TCP, and TLS on 443, which looks like ordinary
+  HTTPS to strict firewalls. Credentials are minted per person and expire
+  after 12 hours, and the server only relays to the SFU, so it can't be used
+  as a proxy to anywhere else.
+- **NACK and PLI** on a lossy network. A lost packet is first asked for again
+  (NACK); the server keeps a short buffer of what it sent each subscriber and
+  resends from it. If a frame still can't be decoded, the receiver asks for a
+  keyframe (PLI), which only the sender can make. The room page counts both
+  under **Sending repairs** and **Receiving repairs**. To see them climb,
+  add loss on Linux with `sudo tc qdisc add dev eth0 root netem loss 5%`
+  (remove it with `sudo tc qdisc del dev eth0 root`).

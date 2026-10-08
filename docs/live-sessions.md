@@ -1,7 +1,7 @@
 # Live sessions: design
 
 Status: in progress. Stages S1 (echo) and S2 (small room) are built in
-`server/`; see its README.
+`server/`, and S3 apart from the Android app; see its README.
 
 Fitmeasure today is local-only: profiles, plans, workouts and measurements
 live on the phone. This document describes the first online feature: **live
@@ -194,9 +194,10 @@ pin anyone on their own screen, and change their own volume for others.
   according to the rules held by the control plane.
 - **TURN relay** for networks where phones can't connect directly. It must be
   reachable on TCP/TLS port 443 for strict networks.
-- **Caddy** in front for HTTPS certificates. Caddy and TURN-over-TLS both want
-  port 443, so they need a second IP address, or a TLS router that sends each
-  connection by hostname (e.g. `turn.` vs `api.`) to the right one.
+- **HTTPS certificates** come from Let's Encrypt, fetched by the Go server
+  itself. HTTPS and TURN over TLS both want port 443, so the server routes
+  each TLS connection by the hostname it asks for (`live.` vs `turn.`); no
+  Caddy or second IP address is needed.
 - Single server to start: Go backend (including the SFU), Postgres and TURN
   on one machine. These parts can be split later.
 

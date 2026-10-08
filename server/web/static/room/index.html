@@ -10,8 +10,9 @@
   <header>
     <nav><a href="/echo/">1. Echo</a><a href="/room/" aria-current="page">2. Small room</a></nav>
     <h1>Small room</h1>
-    <p>Stage 2: up to four people, everyone sees everyone. Open this page on
-      other devices on the same Wi-Fi and join the same room.</p>
+    <p>Up to four people, everyone sees everyone. Open this page on other
+      devices, on any network, and join the same room. "Relay only" forces
+      the connection through the TURN server.</p>
   </header>
 
   <main>
@@ -19,6 +20,7 @@
       <label>Name <input id="name" autocomplete="nickname" maxlength="40" required></label>
       <label>Room <input id="room" pattern="[a-z0-9\-]{1,40}" maxlength="40" required></label>
       <label><input type="checkbox" id="audio" checked> Microphone</label>
+      <label title="Send everything through the TURN server, to test it"><input type="checkbox" id="relay"> Relay only</label>
       <button id="start" type="submit">Join</button>
       <button id="stop" type="button" disabled>Leave</button>
     </form>

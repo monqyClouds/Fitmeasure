@@ -19,6 +19,11 @@ type Config struct {
 	// firewall need this, so only one port has to be opened.
 	UDPPort int
 
+	// TCPPort, when non-zero, also accepts WebRTC media over TCP on this port
+	// ("ICE-TCP"). Some networks block UDP but allow outgoing TCP; this lets
+	// those clients reach the server directly before falling back to TURN.
+	TCPPort int
+
 	// PublicIP is advertised in ICE candidates instead of the machine's own
 	// address. Set it when the server sits behind 1:1 NAT (most cloud VMs).
 	PublicIP string
@@ -53,6 +58,17 @@ func NewAPI(cfg Config) (*webrtc.API, error) {
 			return nil, fmt.Errorf("listen on UDP port %d: %w", cfg.UDPPort, err)
 		}
 		settings.SetICEUDPMux(mux)
+	}
+	if cfg.TCPPort != 0 {
+		ln, err := net.ListenTCP("tcp", &net.TCPAddr{Port: cfg.TCPPort})
+		if err != nil {
+			return nil, fmt.Errorf("listen on TCP port %d: %w", cfg.TCPPort, err)
+		}
+		settings.SetICETCPMux(webrtc.NewICETCPMux(nil, ln, 8))
+		settings.SetNetworkTypes([]webrtc.NetworkType{
+			webrtc.NetworkTypeUDP4, webrtc.NetworkTypeUDP6,
+			webrtc.NetworkTypeTCP4, webrtc.NetworkTypeTCP6,
+		})
 	}
 	if cfg.PublicIP != "" {
 		if net.ParseIP(cfg.PublicIP) == nil {

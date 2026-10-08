@@ -63,6 +63,10 @@ type Rooms struct {
 	Upgrader        websocket.Upgrader
 	MaxParticipants int // 0 means DefaultMaxParticipants
 
+	// ClientICEServers, when set, returns the STUN and TURN servers a
+	// participant's client should use, with credentials minted for them.
+	ClientICEServers func(participantID string) ([]webrtc.ICEServer, error)
+
 	mu    sync.Mutex // guards rooms and every room's membership; taken before room.mu
 	rooms map[string]*room
 }
@@ -120,8 +124,14 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rm.unpublish(t)
 	})
 
+	welcome := signal.Message{Type: signal.TypeWelcome, ID: p.id, Participants: others}
+	if rs.ClientICEServers != nil {
+		if welcome.ICEServers, err = rs.ClientICEServers(p.id); err != nil {
+			log.Error("room: mint TURN credentials", "err", err)
+		}
+	}
 	self := signal.Participant{ID: p.id, Name: p.name}
-	_ = conn.Send(signal.Message{Type: signal.TypeWelcome, ID: p.id, Participants: others})
+	_ = conn.Send(welcome)
 	broadcast(rm.others(p), signal.Message{Type: signal.TypeParticipantJoined, Participant: &self})
 	for _, t := range tracks {
 		p.subscribe(t)

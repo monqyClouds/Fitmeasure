@@ -1,0 +1,26 @@
+[Unit]
+Description=Fitmeasure live sessions server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/fitmeasure/fitmeasure.env
+ExecStart=/usr/local/bin/fitmeasure-server
+# Let's Encrypt certificates are kept in /var/lib/fitmeasure/certs.
+StateDirectory=fitmeasure
+WorkingDirectory=/var/lib/fitmeasure
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65536
+
+# Runs as a throwaway user that may bind ports 80 and 443 and nothing more.
+DynamicUser=yes
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

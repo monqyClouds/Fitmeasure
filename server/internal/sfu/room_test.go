@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 
+	"github.com/monqyClouds/Fitmeasure/server/internal/relay"
 	"github.com/monqyClouds/Fitmeasure/server/internal/rtc"
 	"github.com/monqyClouds/Fitmeasure/server/internal/signal"
 )
@@ -25,12 +27,15 @@ import (
 // prefix, to which tests append "{room}?name=…".
 func startRooms(t *testing.T, max int) string {
 	t.Helper()
+	return serveRooms(t, &Rooms{MaxParticipants: max})
+}
+
+func serveRooms(t *testing.T, rooms *Rooms) string {
+	t.Helper()
+	rooms.API = newTestAPI(t)
+	rooms.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
-	mux.Handle("GET /ws/rooms/{room}", &Rooms{
-		API:             newTestAPI(t),
-		Log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
-		MaxParticipants: max,
-	})
+	mux.Handle("GET /ws/rooms/{room}", rooms)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/rooms/"
@@ -60,6 +65,13 @@ type testPeer struct {
 
 func joinRoom(t *testing.T, url, name string) *testPeer {
 	t.Helper()
+	return joinRoomWith(t, url, name, webrtc.ICETransportPolicyAll)
+}
+
+// joinRoomWith joins with the ICE servers from the welcome and the given
+// policy; ICETransportPolicyRelay allows only paths through TURN.
+func joinRoomWith(t *testing.T, url, name string, policy webrtc.ICETransportPolicy) *testPeer {
+	t.Helper()
 	ws := dial(t, url+"?name="+name)
 	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var welcome signal.Message
@@ -78,11 +90,12 @@ func joinRoom(t *testing.T, url, name string) *testPeer {
 		events: make(chan signal.Message, 64),
 	}
 	var err error
-	if p.pub, err = api.NewPeerConnection(webrtc.Configuration{}); err != nil {
+	pcConfig := webrtc.Configuration{ICEServers: welcome.ICEServers, ICETransportPolicy: policy}
+	if p.pub, err = api.NewPeerConnection(pcConfig); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { p.pub.Close() })
-	if p.sub, err = api.NewPeerConnection(webrtc.Configuration{}); err != nil {
+	if p.sub, err = api.NewPeerConnection(pcConfig); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { p.sub.Close() })
@@ -288,6 +301,47 @@ func TestRoomLeaveRenegotiates(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("after b left: participant_left %v, offer without b's track %v", left, reoffered)
 		}
+	}
+}
+
+// With relay-only clients every packet goes through the TURN server, in both
+// directions, and the room still works.
+func TestRoomOverTURN(t *testing.T) {
+	turn, err := relay.Start(relay.Config{
+		PublicIP:     net.IPv4(127, 0, 0, 1),
+		Host:         "127.0.0.1",
+		RelayMinPort: 40200,
+		RelayMaxPort: 40300,
+		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { turn.Close() })
+	url := serveRooms(t, &Rooms{ClientICEServers: turn.ICEServers}) + "gym"
+
+	stop := make(chan struct{})
+	defer close(stop)
+	a := joinRoomWith(t, url, "ada", webrtc.ICETransportPolicyRelay)
+	go a.publishUntil(stop)
+	b := joinRoomWith(t, url, "bo", webrtc.ICETransportPolicyRelay)
+	go b.publishUntil(stop)
+
+	for _, pair := range [][2]*testPeer{{a, b}, {b, a}} {
+		to, from := pair[0], pair[1]
+		deadline := time.After(15 * time.Second)
+		for got := false; !got; {
+			select {
+			case r := <-to.media:
+				got = r.from == from.id && bytes.Contains(r.payload, marker(from.id))
+			case <-deadline:
+				t.Fatalf("%s never received %s's video through TURN", to.id, from.id)
+			}
+		}
+	}
+	// Each client relays its publish and its subscribe connection.
+	if n := turn.Allocations(); n < 4 {
+		t.Fatalf("got %d TURN allocations, want at least 4", n)
 	}
 }
 

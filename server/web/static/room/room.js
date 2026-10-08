@@ -123,35 +123,6 @@ async function join(event) {
     });
     log(`Signalling WebSocket open, joining room "${room}"`);
 
-    // No STUN/TURN yet: on one network, host candidates are enough.
-    pcs = {
-      publish: new RTCPeerConnection({ iceServers: [] }),
-      subscribe: new RTCPeerConnection({ iceServers: [] }),
-    };
-    for (const [pcName, pc] of Object.entries(pcs)) {
-      pc.onicecandidate = (e) => {
-        if (!e.candidate) return;
-        log(`Local ${pcName} candidate: ${describeCandidate(e.candidate)}`, 'muted');
-        send({ type: 'candidate', pc: pcName, candidate: e.candidate.toJSON() });
-      };
-      pc.onconnectionstatechange = () => {
-        const state = pc.connectionState;
-        log(`${pcName} connection: ${state}`, state === 'connected' ? 'good' : state === 'failed' ? 'bad' : '');
-        if (state === 'connected') startStats();
-        if (state === 'failed') leave();
-      };
-    }
-
-    // Everyone's tracks arrive on the subscribe connection, in a stream whose
-    // ID is the sender's participant ID.
-    pcs.subscribe.ontrack = (e) => {
-      const stream = e.streams[0];
-      if (!stream) return;
-      log(`Receiving ${e.track.kind} from ${nameOf(stream.id)}`, 'good');
-      const tile = ensureTile(stream.id);
-      if (tile.video.srcObject !== stream) tile.video.srcObject = stream;
-    };
-
     // Messages are handled one at a time, in order: a candidate must not be
     // applied before the offer it belongs to.
     let queue = Promise.resolve();
@@ -161,13 +132,52 @@ async function join(event) {
     };
     ws.onclose = () => {
       log('Signalling WebSocket closed');
-      if (pcs) leave();
+      leave();
     };
     $('stop').disabled = false;
   } catch (err) {
     log(`Error: ${err.message}`, 'bad');
     leave();
   }
+}
+
+// Both peer connections are made once the welcome brings the STUN and TURN
+// servers, with credentials just for us.
+function createPeerConnections(iceServers) {
+  const relayOnly = $('relay').checked;
+  const config = { iceServers, iceTransportPolicy: relayOnly ? 'relay' : 'all' };
+  const turnUrls = iceServers.flatMap((s) => s.urls).filter((u) => u.startsWith('turn'));
+  if (turnUrls.length) log(`TURN servers: ${turnUrls.join(', ')}`, 'muted');
+  else log('No TURN server configured: direct connections only', 'muted');
+  if (relayOnly) log('Relay only: every packet goes through TURN', relayOnly && !turnUrls.length ? 'bad' : '');
+
+  pcs = {
+    publish: new RTCPeerConnection(config),
+    subscribe: new RTCPeerConnection(config),
+  };
+  for (const [pcName, pc] of Object.entries(pcs)) {
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) return;
+      log(`Local ${pcName} candidate: ${describeCandidate(e.candidate)}`, 'muted');
+      send({ type: 'candidate', pc: pcName, candidate: e.candidate.toJSON() });
+    };
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      log(`${pcName} connection: ${state}`, state === 'connected' ? 'good' : state === 'failed' ? 'bad' : '');
+      if (state === 'connected') startStats();
+      if (state === 'failed') leave();
+    };
+  }
+
+  // Everyone's tracks arrive on the subscribe connection, in a stream whose
+  // ID is the sender's participant ID.
+  pcs.subscribe.ontrack = (e) => {
+    const stream = e.streams[0];
+    if (!stream) return;
+    log(`Receiving ${e.track.kind} from ${nameOf(stream.id)}`, 'good');
+    const tile = ensureTile(stream.id);
+    if (tile.video.srcObject !== stream) tile.video.srcObject = stream;
+  };
 }
 
 async function handle(msg) {
@@ -180,6 +190,7 @@ async function handle(msg) {
       log(`Joined as ${me}. ${others ? `Already here: ${msg.participants.map((p) => p.name).join(', ')}` : 'Nobody else here yet'}`, 'good');
       tiles.forEach((_, id) => renderCaption(id));
 
+      createPeerConnections(msg.iceServers ?? []);
       ensureTile(me).video.srcObject = localStream;
       for (const track of localStream.getTracks()) {
         pcs.publish.addTrack(track, localStream);
@@ -268,21 +279,22 @@ async function showStats() {
   let sentBytes = 0;
   let receivedBytes = 0;
 
-  const pubById = new Map();
-  pub.forEach((s) => pubById.set(s.id, s));
   pub.forEach((s) => {
     if (s.type === 'outbound-rtp') sentBytes += s.bytesSent;
     if (s.type === 'outbound-rtp' && s.kind === 'video') {
       rows['Sending'] = describeVideo(s);
       setDetail(me, describeVideo(s));
-    }
-    if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') {
-      const local = pubById.get(s.localCandidateId);
-      const remote = pubById.get(s.remoteCandidateId);
-      rows['Path'] = `${local?.candidateType} ${local?.address || '(address hidden by browser)'} → ${remote?.candidateType} ${remote?.address ?? ''}:${remote?.port ?? ''} (${local?.protocol})`;
-      if (s.currentRoundTripTime !== undefined) rows['Round trip'] = `${Math.round(s.currentRoundTripTime * 1000)} ms`;
+      // NACK: the server asked us to resend lost packets. PLI: a receiver
+      // couldn't decode and asked for a keyframe (relayed by the server).
+      rows['Sending repairs'] = `${s.nackCount ?? 0} NACKs, ${s.retransmittedPacketsSent ?? 0} packets resent, ${s.pliCount ?? 0} keyframe requests`;
     }
   });
+  for (const [label, report] of [['Publish path', pub], ['Subscribe path', sub]]) {
+    const path = describePath(report);
+    if (!path) continue;
+    rows[label] = path.text;
+    if (label === 'Publish path' && path.rtt !== undefined) rows['Round trip'] = `${Math.round(path.rtt * 1000)} ms`;
+  }
 
   // Inbound video stats name the track; the track's stream is the sender.
   const streamOfTrack = new Map();
@@ -292,8 +304,14 @@ async function showStats() {
     }
   }
   let receiving = 0;
+  const losses = { lost: 0, nacks: 0, plis: 0 };
   sub.forEach((s) => {
     if (s.type === 'inbound-rtp') receivedBytes += s.bytesReceived;
+    if (s.type === 'inbound-rtp' && s.kind === 'video') {
+      losses.lost += s.packetsLost ?? 0;
+      losses.nacks += s.nackCount ?? 0;
+      losses.plis += s.pliCount ?? 0;
+    }
     if (s.type === 'inbound-rtp' && s.kind === 'video' && s.bytesReceived > 0) {
       receiving++;
       const id = streamOfTrack.get(s.trackIdentifier);
@@ -303,6 +321,7 @@ async function showStats() {
 
   rows['In the room'] = `${names.size} ${names.size === 1 ? 'person' : 'people'}`;
   rows['Receiving'] = `${receiving} video ${receiving === 1 ? 'stream' : 'streams'}`;
+  rows['Receiving repairs'] = `${losses.lost} packets lost, ${losses.nacks} NACKs, ${losses.plis} keyframe requests`;
   if (lastBytes) {
     rows['Upload'] = `${Math.round(((sentBytes - lastBytes.sent) * 8) / 1000)} kbit/s`;
     rows['Download'] = `${Math.round(((receivedBytes - lastBytes.received) * 8) / 1000)} kbit/s`;
@@ -318,6 +337,29 @@ async function showStats() {
     dd.textContent = v;
     dl.append(dt, dd);
   }
+}
+
+// The candidate pair ICE chose, e.g. "relay via TURN over tls: … → host …".
+// Candidate types: host (a local address), srflx (our public address as a
+// STUN server saw it), prflx (learned during checks), relay (a TURN server).
+function describePath(report) {
+  let pair;
+  report.forEach((s) => {
+    if (s.type === 'transport' && s.selectedCandidatePairId) pair = report.get(s.selectedCandidatePairId);
+  });
+  if (!pair) {
+    report.forEach((s) => {
+      if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s;
+    });
+  }
+  if (!pair) return null;
+  const local = report.get(pair.localCandidateId);
+  const remote = report.get(pair.remoteCandidateId);
+  const how = local?.candidateType === 'relay' ? `relay via TURN over ${local.relayProtocol ?? '?'}` : local?.candidateType;
+  return {
+    text: `${how} ${local?.address || '(address hidden)'} → ${remote?.candidateType} ${remote?.address ?? ''}:${remote?.port ?? ''} (${local?.protocol})`,
+    rtt: pair.currentRoundTripTime,
+  };
 }
 
 function setDetail(id, detail) {
