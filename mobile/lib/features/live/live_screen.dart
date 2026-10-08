@@ -143,35 +143,38 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
               const SizedBox(height: 26),
               stagger(const SectionHeader('How it works')),
               stagger(
-                const Row(
-                  children: [
-                    Expanded(
-                      child: _Step(
-                        icon: Icons.tag_rounded,
-                        color: Color(0xFFA99BFF),
-                        title: 'Pick a room',
-                        text: 'Share its name with your training partners',
+                const IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(
+                        child: _Step(
+                          icon: Icons.tag_rounded,
+                          color: Color(0xFFA99BFF),
+                          title: 'Pick a room',
+                          text: 'Share its name with your training partners',
+                        ),
                       ),
-                    ),
-                    SizedBox(width: 10),
-                    Expanded(
-                      child: _Step(
-                        icon: Icons.photo_camera_front_rounded,
-                        color: Color(0xFF3DD6C6),
-                        title: 'Check your camera',
-                        text: 'Prop the phone where your whole body shows',
+                      SizedBox(width: 10),
+                      Expanded(
+                        child: _Step(
+                          icon: Icons.photo_camera_front_rounded,
+                          color: Color(0xFF3DD6C6),
+                          title: 'Check your camera',
+                          text: 'Prop the phone where your whole body shows',
+                        ),
                       ),
-                    ),
-                    SizedBox(width: 10),
-                    Expanded(
-                      child: _Step(
-                        icon: Icons.headphones_rounded,
-                        color: Color(0xFFFFB547),
-                        title: 'Wear earbuds',
-                        text: 'So the room hears you, not itself',
+                      SizedBox(width: 10),
+                      Expanded(
+                        child: _Step(
+                          icon: Icons.headphones_rounded,
+                          color: Color(0xFFFFB547),
+                          title: 'Wear earbuds',
+                          text: 'So the room hears you, not itself',
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -319,10 +322,11 @@ class _GridPainter extends CustomPainter {
         tileH,
       );
       final c = _colors[i];
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(rect, const Radius.circular(14)),
-        Paint()..color = c.withValues(alpha: 0.16),
-      );
+      final tile = RRect.fromRectAndRadius(rect, const Radius.circular(14));
+      canvas.drawRRect(tile, Paint()..color = c.withValues(alpha: 0.16));
+      // The person is cut off at the tile's edges, like a real video frame.
+      canvas.save();
+      canvas.clipRRect(tile);
       // A person: head and shoulders, arms up on alternate tiles.
       final cx = rect.center.dx;
       final unit = rect.height / 6;
@@ -353,6 +357,7 @@ class _GridPainter extends CustomPainter {
           );
         }
       }
+      canvas.restore();
     }
 
     // "Live" dot with an expanding ring.
@@ -366,21 +371,22 @@ class _GridPainter extends CustomPainter {
     canvas.drawCircle(dot, 5, Paint()..color = red);
     // A subtle sweep so the card feels alive.
     final sweep = Paint()
-      ..shader = LinearGradient(
-        colors: [
-          Colors.white.withValues(alpha: 0),
-          Colors.white.withValues(alpha: 0.05),
-          Colors.white.withValues(alpha: 0),
-        ],
-        transform: GradientRotation(math.pi / 5),
-      ).createShader(
-        Rect.fromLTWH(
-          size.width * (pulse * 2 - 1),
-          0,
-          size.width,
-          size.height,
-        ),
-      );
+      ..shader =
+          LinearGradient(
+            colors: [
+              Colors.white.withValues(alpha: 0),
+              Colors.white.withValues(alpha: 0.05),
+              Colors.white.withValues(alpha: 0),
+            ],
+            transform: GradientRotation(math.pi / 5),
+          ).createShader(
+            Rect.fromLTWH(
+              size.width * (pulse * 2 - 1),
+              0,
+              size.width,
+              size.height,
+            ),
+          );
     canvas.drawRect(Offset.zero & size, sweep);
   }
 

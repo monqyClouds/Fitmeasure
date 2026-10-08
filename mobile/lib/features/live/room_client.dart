@@ -42,21 +42,23 @@ class RemoteParticipant {
   final String id;
   String name;
   final renderer = RTCVideoRenderer();
-  bool _rendererReady = false;
   MediaStream? stream;
   bool hasVideo = false;
 
+  // Audio and video arrive as two track events moments apart. Both must
+  // wait on the same initialisation: initialising twice creates a second
+  // texture, and the tile may keep showing the first, which gets no frames.
+  Future<void>? _rendererInit;
+
   Future<void> _attach(MediaStream s) async {
-    if (!_rendererReady) {
-      await renderer.initialize();
-      _rendererReady = true;
-    }
+    await (_rendererInit ??= renderer.initialize());
     stream = s;
     renderer.srcObject = s;
   }
 
   Future<void> _dispose() async {
-    if (_rendererReady) {
+    if (_rendererInit case final init?) {
+      await init;
       renderer.srcObject = null;
       await renderer.dispose();
     }
@@ -150,9 +152,8 @@ class RoomClient extends ChangeNotifier {
         },
         // After any queued messages, so a refusal like "room is full"
         // explains the close rather than being lost to it.
-        onDone: () => _queue = _queue.then(
-          (_) => _end('Disconnected from the server'),
-        ),
+        onDone: () =>
+            _queue = _queue.then((_) => _end('Disconnected from the server')),
         onError: (_) => _queue = _queue.then(
           (_) => _end('Lost the connection to the server'),
         ),
@@ -201,7 +202,9 @@ class RoomClient extends ChangeNotifier {
       case SignalType.candidate:
         final c = msg.candidate;
         if (c == null) return;
-        final ready = msg.pc == PeerName.publish ? _pubRemoteSet : _subRemoteSet;
+        final ready = msg.pc == PeerName.publish
+            ? _pubRemoteSet
+            : _subRemoteSet;
         if (!ready) {
           (_pendingCandidates[msg.pc!] ??= []).add(c);
           return;

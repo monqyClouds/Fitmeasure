@@ -36,7 +36,11 @@ class LiveParticipant {
 
 /// An ICE candidate as JSON carries it (RTCIceCandidateInit).
 class CandidateInit {
-  const CandidateInit({required this.candidate, this.sdpMid, this.sdpMLineIndex});
+  const CandidateInit({
+    required this.candidate,
+    this.sdpMid,
+    this.sdpMLineIndex,
+  });
 
   factory CandidateInit.fromJson(Map<String, dynamic> json) => CandidateInit(
     candidate: json['candidate'] as String,

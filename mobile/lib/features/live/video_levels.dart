@@ -43,8 +43,7 @@ class VideoLevelPolicy {
       _upVotes = 0;
       return level = fits;
     }
-    if (fits < level &&
-        availableKbps >= videoLevels[level - 1].minKbps * 1.3) {
+    if (fits < level && availableKbps >= videoLevels[level - 1].minKbps * 1.3) {
       if (++_upVotes >= upVotesNeeded) {
         _upVotes = 0;
         return level = level - 1;

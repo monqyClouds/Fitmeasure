@@ -138,8 +138,8 @@ class _PreJoinScreenState extends State<PreJoinScreen> {
                       RTCVideoView(
                         _preview,
                         mirror: true,
-                        objectFit: RTCVideoViewObjectFit
-                            .RTCVideoViewObjectFitCover,
+                        objectFit:
+                            RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
                       )
                     else
                       Center(
@@ -290,8 +290,7 @@ class _FramingGuide extends StatelessWidget {
   const _FramingGuide();
 
   @override
-  Widget build(BuildContext context) =>
-      CustomPaint(painter: _FramingPainter());
+  Widget build(BuildContext context) => CustomPaint(painter: _FramingPainter());
 }
 
 class _FramingPainter extends CustomPainter {

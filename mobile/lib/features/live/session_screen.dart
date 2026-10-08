@@ -290,9 +290,8 @@ class _Tile extends StatelessWidget {
               ),
               child: Text(
                 name,
-                style: Theme.of(context).textTheme.labelMedium!.copyWith(
-                  color: Colors.white,
-                ),
+                style: Theme.of(context).textTheme.labelMedium!
+                    .copyWith(color: Colors.white),
               ),
             ),
           ),
@@ -420,9 +419,7 @@ class _FloatingSelfState extends State<_FloatingSelf> {
         child: DecoratedBox(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(Radii.chip),
-            boxShadow: const [
-              BoxShadow(color: Colors.black54, blurRadius: 12),
-            ],
+            boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 12)],
           ),
           child: widget.child,
         ),
