@@ -7,8 +7,8 @@ scratch on [Pion](https://github.com/pion/webrtc), in the stages described in
 | Stage | Status |
 |---|---|
 | S1. Echo: your camera goes to the server and comes back | ✅ |
-| S2. Small room: up to 4 people, everyone sees everyone | next |
-| S3. Real networks: TURN, deployment, the Android app | |
+| S2. Small room: up to 4 people, everyone sees everyone | ✅ |
+| S3. Real networks: TURN, deployment, the Android app | next |
 | S4. Simulcast | |
 | S5. Bandwidth estimation | |
 | S6. Session features | |
@@ -22,9 +22,16 @@ cd server
 go run ./cmd/fitmeasure-server
 ```
 
-Open <http://localhost:8080> in Chrome or Firefox, press **Start** and allow
-the camera. The right-hand video has made the round trip through the server.
-The page lists every signalling step and live connection stats.
+Open <http://localhost:8080> in Chrome or Firefox. It opens the latest stage:
+
+- **Small room** (`/room/`): enter a name and press **Join**. Open the page in
+  more tabs, browsers or devices and join the same room; everyone sees
+  everyone, up to four people. The log shows every signalling step, including
+  the server's new offer each time someone joins or leaves.
+- **Echo** (`/echo/`): press **Start**. The right-hand video has made the round
+  trip through the server.
+
+Both pages show live connection stats.
 
 ### From a phone or another computer
 
@@ -79,7 +86,7 @@ browser does, sends VP8 video, and checks that the same payload comes back.
 cmd/fitmeasure-server/   main: flags, HTTP routes
 internal/rtc/            the shared Pion API: codecs (VP8, Opus), interceptors, ICE settings
 internal/signal/         signalling messages (offer, answer, candidate) over a WebSocket
-internal/sfu/            media forwarding: echo.go is stage 1
+internal/sfu/            media forwarding: echo.go is stage 1, room.go stage 2
 web/static/              plain JavaScript test pages for the stages
 ```
 
@@ -99,5 +106,21 @@ web/static/              plain JavaScript test pages for the stages
 - **Keyframes:** the server asks the browser for a keyframe (PLI) when the
   video track starts, and relays the browser's own PLI requests for the echoed
   video back to its encoder. The server can't make a keyframe itself; only the
-  sender's encoder can. This matters much more once one sender has many
-  receivers (stage 2).
+  sender's encoder can. In a room every receiver's decoder may ask at once, so
+  the server passes on at most one request per sender every 500 ms.
+- **Two peer connections per person** in a room. On *publish* the browser
+  offers and the server answers; on *subscribe* the server offers. Only one
+  side ever offers on each connection, so offers never cross. In
+  `chrome://webrtc-internals` they show up as two separate connections.
+- **Renegotiation:** each join or leave changes what everyone else should
+  receive, so the server sends each of them a new subscribe offer. Only one
+  offer is in flight per person; changes made meanwhile go into a follow-up
+  offer after the answer (`negotiate` and `handleAnswer` in `room.go`). A
+  track that stops is not deleted from the SDP: its `m=` line stays, marked
+  inactive.
+- **Forwarding to many:** each incoming track is copied into one outgoing
+  track on the server, which Pion writes to every subscriber's connection,
+  rewriting the SSRC and payload type for each. Every participant receives
+  every other at full quality, so the server's upload grows with the square of
+  the room size. Simulcast (stage 4) and bandwidth estimation (stage 5)
+  address that.

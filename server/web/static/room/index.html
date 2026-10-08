@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Small room · Fitmeasure SFU</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <nav><a href="/echo/">1. Echo</a><a href="/room/" aria-current="page">2. Small room</a></nav>
+    <h1>Small room</h1>
+    <p>Stage 2: up to four people, everyone sees everyone. Open this page on
+      other devices on the same Wi-Fi and join the same room.</p>
+  </header>
+
+  <main>
+    <form id="join" class="controls">
+      <label>Name <input id="name" autocomplete="nickname" maxlength="40" required></label>
+      <label>Room <input id="room" pattern="[a-z0-9\-]{1,40}" maxlength="40" required></label>
+      <label><input type="checkbox" id="audio" checked> Microphone</label>
+      <button id="start" type="submit">Join</button>
+      <button id="stop" type="button" disabled>Leave</button>
+    </form>
+
+    <div id="tiles" class="videos"></div>
+
+    <section>
+      <h2>Connection</h2>
+      <dl id="stats" class="stats"></dl>
+    </section>
+
+    <section>
+      <h2>What happened</h2>
+      <ol id="log" class="log"></ol>
+    </section>
+  </main>
+
+  <script src="room.js"></script>
+</body>
+</html>

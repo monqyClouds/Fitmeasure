@@ -1,7 +1,8 @@
 // Command fitmeasure-server runs the Fitmeasure live sessions backend.
 //
-// For now it serves stage 1 of the SFU: an echo test page at / and its
-// WebSocket at /ws/echo.
+// For now it serves the SFU's test stages: stage 2's small rooms at /room/
+// (WebSocket /ws/rooms/{room}) and stage 1's echo at /echo/ (WebSocket
+// /ws/echo).
 package main
 
 import (
@@ -57,6 +58,7 @@ func run(log *slog.Logger, addr string, udpPort int, publicIP, stun, tlsCert, tl
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /ws/echo", &sfu.Echo{API: api, ICEServers: cfg.ICEServers, Log: log})
+	mux.Handle("GET /ws/rooms/{room}", &sfu.Rooms{API: api, ICEServers: cfg.ICEServers, Log: log})
 	mux.Handle("GET /", web.Handler())
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok\n"))

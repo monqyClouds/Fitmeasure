@@ -21,14 +21,41 @@ const (
 	TypeAnswer    = "answer"
 	TypeCandidate = "candidate"
 	TypeError     = "error"
+
+	// Room events, server to client.
+	TypeWelcome           = "welcome"            // you joined: ID is yours, Participants are the others
+	TypeParticipantJoined = "participant_joined" // Participant arrived
+	TypeParticipantLeft   = "participant_left"   // Participant left
+)
+
+// Peer connection names. In a room each participant has two: one to publish
+// their own camera and microphone (the client offers), and one to subscribe to
+// everyone else's (the server offers, again whenever the set of tracks
+// changes). The echo has a single connection and leaves PC empty.
+const (
+	PCPublish   = "publish"
+	PCSubscribe = "subscribe"
 )
 
 // Message is one signalling message in either direction.
 type Message struct {
 	Type      string                   `json:"type"`
+	PC        string                   `json:"pc,omitempty"`
 	SDP       string                   `json:"sdp,omitempty"`
 	Candidate *webrtc.ICECandidateInit `json:"candidate,omitempty"`
 	Error     string                   `json:"error,omitempty"`
+
+	ID           string        `json:"id,omitempty"`
+	Participant  *Participant  `json:"participant,omitempty"`
+	Participants []Participant `json:"participants,omitempty"`
+}
+
+// Participant identifies someone in a room. Their tracks arrive in a media
+// stream whose ID is the participant's ID, so clients can tell whose video is
+// whose.
+type Participant struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 const (
