@@ -109,6 +109,7 @@ class _SessionScreenState extends State<SessionScreen> {
                               )
                             : _Grid(
                                 others: others,
+                                speaking: _client.speaking,
                                 pinned: _pinned,
                                 onTap: (id) => setState(
                                   () => _pinned = _pinned == id ? null : id,
@@ -123,6 +124,8 @@ class _SessionScreenState extends State<SessionScreen> {
                             renderer: _self,
                             name: _client.name,
                             cameraOn: _client.cameraOn,
+                            micOn: _client.micOn,
+                            speaking: _client.speaking.contains(_client.myId),
                             mirror: _client.frontCamera,
                           ),
                         ),
@@ -194,12 +197,14 @@ class _TopBar extends StatelessWidget {
 class _Grid extends StatelessWidget {
   const _Grid({
     required this.others,
+    required this.speaking,
     required this.pinned,
     required this.onTap,
     required this.onSize,
   });
 
   final List<RemoteParticipant> others;
+  final Set<String> speaking;
   final String? pinned;
   final ValueChanged<String> onTap;
 
@@ -211,6 +216,7 @@ class _Grid extends StatelessWidget {
     Widget tile(RemoteParticipant p) => _RemoteTile(
       key: ValueKey(p.id),
       participant: p,
+      speaking: speaking.contains(p.id),
       onTap: () => onTap(p.id),
       onSize: (w, h) => onSize(p.id, w, h),
     );
@@ -271,11 +277,13 @@ class _RemoteTile extends StatelessWidget {
   const _RemoteTile({
     super.key,
     required this.participant,
+    required this.speaking,
     required this.onTap,
     required this.onSize,
   });
 
   final RemoteParticipant participant;
+  final bool speaking;
   final VoidCallback onTap;
   final void Function(int width, int height) onSize;
 
@@ -299,7 +307,9 @@ class _RemoteTile extends StatelessWidget {
           onTap: onTap,
           child: _Tile(
             name: name,
-            video: p.stream != null && p.hasVideo
+            micOn: p.mic,
+            speaking: speaking,
+            video: p.stream != null && p.hasVideo && p.camera
                 ? RTCVideoView(
                     p.renderer,
                     objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
@@ -318,12 +328,16 @@ class _SelfTile extends StatelessWidget {
     required this.renderer,
     required this.name,
     required this.cameraOn,
+    required this.micOn,
+    required this.speaking,
     required this.mirror,
   });
 
   final RTCVideoRenderer renderer;
   final String name;
   final bool cameraOn;
+  final bool micOn;
+  final bool speaking;
   final bool mirror;
 
   @override
@@ -331,6 +345,8 @@ class _SelfTile extends StatelessWidget {
     return _Tile(
       name: 'You',
       small: true,
+      micOn: micOn,
+      speaking: speaking,
       video: cameraOn
           ? RTCVideoView(
               renderer,
@@ -342,39 +358,84 @@ class _SelfTile extends StatelessWidget {
   }
 }
 
+/// A video tile: the picture (or a placeholder), the name with a muted-mic
+/// mark, and an accent border that lights up while they speak.
 class _Tile extends StatelessWidget {
-  const _Tile({required this.name, required this.video, this.small = false});
+  const _Tile({
+    required this.name,
+    required this.video,
+    this.small = false,
+    this.micOn = true,
+    this.speaking = false,
+  });
   final String name;
   final Widget video;
   final bool small;
+  final bool micOn;
+  final bool speaking;
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(small ? Radii.chip : Radii.tile),
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          const ColoredBox(color: AppColors.surface),
-          video,
-          Positioned(
-            left: 8,
-            bottom: 8,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.55),
-                borderRadius: BorderRadius.circular(8),
+    final radius = BorderRadius.circular(small ? Radii.chip : Radii.tile);
+    final accent = Theme.of(context).colorScheme.primary;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        ClipRRect(
+          borderRadius: radius,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              const ColoredBox(color: AppColors.surface),
+              video,
+              Positioned(
+                left: 8,
+                bottom: 8,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (!micOn) ...[
+                        const Icon(
+                          Icons.mic_off_rounded,
+                          size: 14,
+                          color: AppColors.danger,
+                        ),
+                        const SizedBox(width: 4),
+                      ],
+                      Text(
+                        name,
+                        style: Theme.of(context).textTheme.labelMedium!
+                            .copyWith(color: Colors.white),
+                      ),
+                    ],
+                  ),
+                ),
               ),
-              child: Text(
-                name,
-                style: Theme.of(context).textTheme.labelMedium!
-                    .copyWith(color: Colors.white),
+            ],
+          ),
+        ),
+        IgnorePointer(
+          child: AnimatedContainer(
+            duration: Motion.fast,
+            decoration: BoxDecoration(
+              borderRadius: radius,
+              border: Border.all(
+                color: speaking ? accent : Colors.transparent,
+                width: 3,
               ),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

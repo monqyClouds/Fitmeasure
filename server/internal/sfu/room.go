@@ -26,8 +26,10 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -126,6 +128,7 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rs.leave(rm, p)
+	p.room = rm
 	log.Info("room: joined", "others", len(others))
 
 	// Bandwidth: share the estimate between the cameras p watches.
@@ -168,7 +171,7 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Error("room: mint TURN credentials", "err", err)
 		}
 	}
-	self := signal.Participant{ID: p.id, Name: p.name}
+	self := p.info()
 	_ = conn.Send(welcome)
 	broadcast(rm.others(p), signal.Message{Type: signal.TypeParticipantJoined, Participant: &self})
 	for _, t := range tracks {
@@ -190,8 +193,9 @@ func (rs *Rooms) join(roomName string, p *participant) (*room, []signal.Particip
 	}
 	rm := rs.rooms[roomName]
 	if rm == nil {
-		rm = &room{name: roomName, participants: make(map[string]*participant), tracks: make(map[*upTrack]bool)}
+		rm = &room{name: roomName, done: make(chan struct{}), participants: make(map[string]*participant), tracks: make(map[*upTrack]bool)}
 		rs.rooms[roomName] = rm
+		go rm.watchSpeakers()
 	}
 
 	max := rs.MaxParticipants
@@ -206,7 +210,7 @@ func (rs *Rooms) join(roomName string, p *participant) (*room, []signal.Particip
 	}
 	others := make([]signal.Participant, 0, len(rm.participants))
 	for _, q := range rm.participants {
-		others = append(others, signal.Participant{ID: q.id, Name: q.name})
+		others = append(others, q.info())
 	}
 	tracks := make([]*upTrack, 0, len(rm.tracks))
 	for t := range rm.tracks {
@@ -232,6 +236,7 @@ func (rs *Rooms) leave(rm *room, p *participant) {
 	}
 	if len(rm.participants) == 0 {
 		delete(rs.rooms, rm.name)
+		close(rm.done)
 	}
 	rm.mu.Unlock()
 	rs.mu.Unlock()
@@ -239,17 +244,54 @@ func (rs *Rooms) leave(rm *room, p *participant) {
 	for _, t := range published {
 		rm.unpublish(t)
 	}
-	self := signal.Participant{ID: p.id, Name: p.name}
+	self := p.info()
 	broadcast(rm.others(p), signal.Message{Type: signal.TypeParticipantLeft, Participant: &self})
 }
 
 // room is one group of people who all see each other.
 type room struct {
 	name string
+	done chan struct{} // closed when the last person leaves
 
 	mu           sync.Mutex
 	participants map[string]*participant
 	tracks       map[*upTrack]bool // every track being published in the room
+}
+
+// speakingLevel: audio louder than this (in -dBov: 0 is the loudest, 127
+// silence) counts as speech. Quiet rooms with noise suppression sit well
+// above 60.
+const speakingLevel = 50
+
+// speakingHold is how long someone counts as speaking after their last loud
+// packet, so the indicator doesn't flicker between words.
+const speakingHold = 500 * time.Millisecond
+
+// watchSpeakers tells everyone who is speaking whenever that changes, until
+// the room closes.
+func (rm *room) watchSpeakers() {
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	var last string
+	for {
+		select {
+		case <-rm.done:
+			return
+		case now := <-tick.C:
+			everyone := rm.others(nil)
+			var speaking []string
+			for _, p := range everyone {
+				if p.speaking(now) {
+					speaking = append(speaking, p.id)
+				}
+			}
+			sort.Strings(speaking)
+			if key := strings.Join(speaking, ","); key != last {
+				last = key
+				broadcast(everyone, signal.Message{Type: signal.TypeSpeakers, Speakers: speaking})
+			}
+		}
+	}
 }
 
 // others returns everyone in the room except p.
@@ -312,16 +354,20 @@ type participant struct {
 	sub      *webrtc.PeerConnection // everyone else's, out
 	log      *slog.Logger
 
-	mu            sync.Mutex
-	closed        bool
-	downs         map[*upTrack]*downTrack          // what sub is sending them
-	published     map[*webrtc.RTPReceiver]*upTrack // what pub is receiving from them
-	liveLayers    map[*upTrack]int                 // layers still arriving, per published track
-	tiles         map[string]signal.Tile           // their layout, by participant ID
-	probe         prober                           // bandwidth probing, used by allocateLoop only
-	haveLayout    bool                             // whether they've sent one
-	offerInFlight bool                             // a subscribe offer awaits its answer
-	offerAgain    bool                             // tracks changed meanwhile; offer again after the answer
+	mu          sync.Mutex
+	closed      bool
+	downs       map[*upTrack]*downTrack          // what sub is sending them
+	published   map[*webrtc.RTPReceiver]*upTrack // what pub is receiving from them
+	liveLayers  map[*upTrack]int                 // layers still arriving, per published track
+	tiles       map[string]signal.Tile           // their layout, by participant ID
+	probe       prober                           // bandwidth probing, used by allocateLoop only
+	room        *room                            // set once joined
+	mic, camera bool                             // as they last reported
+
+	lastLoud      atomic.Int64 // UnixNano of their last packet louder than speakingLevel
+	haveLayout    bool         // whether they've sent one
+	offerInFlight bool         // a subscribe offer awaits its answer
+	offerAgain    bool         // tracks changed meanwhile; offer again after the answer
 }
 
 func newParticipant(pubAPI, subAPI *webrtc.API, iceServers []webrtc.ICEServer, id, name string, conn *signal.Conn, log *slog.Logger) (*participant, error) {
@@ -340,6 +386,8 @@ func newParticipant(pubAPI, subAPI *webrtc.API, iceServers []webrtc.ICEServer, i
 		downs:      make(map[*upTrack]*downTrack),
 		published:  make(map[*webrtc.RTPReceiver]*upTrack),
 		liveLayers: make(map[*upTrack]int),
+		mic:        true,
+		camera:     true,
 	}
 
 	for pcName, pc := range map[string]*webrtc.PeerConnection{signal.PCPublish: pub, signal.PCSubscribe: sub} {
@@ -447,6 +495,59 @@ func (p *participant) unsubscribe(t *upTrack) {
 		p.log.Warn("room: remove track", "err", err)
 	}
 	p.negotiate()
+}
+
+// info is how p appears to everyone else.
+func (p *participant) info() signal.Participant {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return signal.Participant{ID: p.id, Name: p.name, Mic: p.mic, Camera: p.camera}
+}
+
+// cameraOn reports whether p's camera is on; video from an off camera
+// isn't forwarded at all.
+func (p *participant) cameraOn() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.camera
+}
+
+// speaking reports whether p's microphone is on and was loud just now.
+func (p *participant) speaking(now time.Time) bool {
+	p.mu.Lock()
+	mic := p.mic
+	p.mu.Unlock()
+	return mic && now.UnixNano()-p.lastLoud.Load() < int64(speakingHold)
+}
+
+// setState records p's microphone and camera, tells everyone else, and
+// pauses or resumes forwarding p's video to match the camera.
+func (p *participant) setState(mic, camera *bool) {
+	p.mu.Lock()
+	if mic != nil {
+		p.mic = *mic
+	}
+	cameraChanged := camera != nil && *camera != p.camera
+	if camera != nil {
+		p.camera = *camera
+	}
+	published := make([]*upTrack, 0, len(p.published))
+	for _, t := range p.published {
+		published = append(published, t)
+	}
+	rm := p.room
+	p.mu.Unlock()
+
+	if rm == nil {
+		return
+	}
+	self := p.info()
+	broadcast(rm.others(p), signal.Message{Type: signal.TypeParticipantChanged, Participant: &self})
+	if cameraChanged {
+		for _, t := range published {
+			t.retargetAll()
+		}
+	}
 }
 
 // tileSize is how big the owner's tile is on p's screen. haveTile is false
@@ -750,6 +851,9 @@ func (p *participant) signal() error {
 
 		case signal.TypeLayout:
 			p.setLayout(msg.Tiles)
+
+		case signal.TypeState:
+			p.setState(msg.Mic, msg.Camera)
 
 		case signal.TypeCandidate:
 			pc := pcs[msg.PC]

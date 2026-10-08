@@ -59,6 +59,29 @@ video {
 .tile { position: relative; }
 .tile:not(.self) { cursor: zoom-in; }
 .tile.pinned { grid-column: 1 / -1; cursor: zoom-out; }
+
+/* Speaking: an outline that fades in and out with their voice. */
+.tile video { outline: 3px solid transparent; outline-offset: -3px; transition: outline-color 0.15s; }
+.tile.speaking video { outline-color: var(--accent); }
+
+/* Camera off: their initials instead of a black picture. */
+.tile .avatar {
+  display: none;
+  position: absolute;
+  inset: 0;
+  place-items: center;
+  font-size: 44px;
+  font-weight: 800;
+  color: var(--text-2);
+  background: var(--surface);
+  border-radius: 18px;
+}
+.tile.camera-off .avatar { display: grid; }
+.tile.camera-off.speaking .avatar { box-shadow: inset 0 0 0 3px var(--accent); }
+.tile figcaption svg { vertical-align: -2px; color: var(--bad); }
+
+button.toggle { background: var(--surface-high); color: var(--text); }
+button.toggle.off { background: var(--bad); color: #fff; }
 .tile figcaption {
   position: absolute;
   left: 10px;

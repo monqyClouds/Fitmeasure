@@ -12,6 +12,7 @@ import (
 	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/interceptor/pkg/report"
+	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -232,7 +233,11 @@ func registerCodecs(media *webrtc.MediaEngine) error {
 			return fmt.Errorf("register %s: %w", c.params.MimeType, err)
 		}
 	}
-	return nil
+	// Each audio packet's loudness, in a header extension (RFC 6464), so the
+	// server can tell who is speaking without decoding any audio.
+	return media.RegisterHeaderExtension(
+		webrtc.RTPHeaderExtensionCapability{URI: sdp.AudioLevelURI}, webrtc.RTPCodecTypeAudio,
+	)
 }
 
 // Codec capabilities for tracks the server sends, matching registerCodecs.

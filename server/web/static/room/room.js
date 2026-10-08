@@ -16,6 +16,8 @@ let statsTimer = null;
 let lastBytes = null;
 let subscribeOffers = 0;
 const names = new Map(); // participant ID → name
+const states = new Map(); // participant ID → { mic, camera }, as they report
+let speakers = new Set(); // participant IDs speaking now, from the server
 const tiles = new Map(); // participant ID → { figure, video, caption }
 
 // Simulcast: the camera goes up as three layers at once, and the server
@@ -89,7 +91,10 @@ function ensureTile(id) {
   video.playsInline = true;
   video.muted = id === me; // never play our own mic back
   const caption = document.createElement('figcaption');
-  figure.append(video, caption);
+  // Initials, shown instead of the black picture when the camera is off.
+  const avatar = document.createElement('div');
+  avatar.className = 'avatar';
+  figure.append(video, avatar, caption);
   $('tiles').append(figure);
   if (id !== me) {
     // Click a tile to make it large (pin it), again to shrink it. The
@@ -102,16 +107,24 @@ function ensureTile(id) {
     };
     resizeObserver.observe(figure);
   }
-  tile = { figure, video, caption, detail: '' };
+  tile = { figure, video, avatar, caption, detail: '' };
   tiles.set(id, tile);
   renderCaption(id);
   return tile;
 }
 
+// A microphone with a line through it.
+const micOffIcon = '<svg viewBox="0 0 24 24" width="14" height="14" aria-label="muted"><path fill="currentColor" d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3 3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>';
+
 function renderCaption(id) {
   const tile = tiles.get(id);
   if (!tile) return;
+  const state = states.get(id) ?? { mic: true, camera: true };
   tile.caption.textContent = id === me ? `${nameOf(id)} (you)` : nameOf(id);
+  if (!state.mic) tile.caption.insertAdjacentHTML('afterbegin', micOffIcon + ' ');
+  tile.figure.classList.toggle('camera-off', !state.camera);
+  tile.figure.classList.toggle('speaking', speakers.has(id));
+  tile.avatar.textContent = (nameOf(id).trim()[0] ?? '?').toUpperCase();
   if (tile.detail) {
     const small = document.createElement('small');
     small.textContent = tile.detail;
@@ -241,7 +254,14 @@ async function handle(msg) {
     case 'welcome': {
       me = msg.id;
       names.set(me, $('name').value.trim());
-      for (const p of msg.participants ?? []) names.set(p.id, p.name);
+      for (const p of msg.participants ?? []) {
+        names.set(p.id, p.name);
+        states.set(p.id, { mic: p.mic, camera: p.camera });
+      }
+      states.set(me, { mic: micOn(), camera: true });
+      sendState();
+      $('mic').hidden = $('cam').hidden = false;
+      renderToggles();
       const others = msg.participants?.length ?? 0;
       log(`Joined as ${me}. ${others ? `Already here: ${msg.participants.map((p) => p.name).join(', ')}` : 'Nobody else here yet'}`, 'good');
       tiles.forEach((_, id) => renderCaption(id));
@@ -284,6 +304,7 @@ async function handle(msg) {
       break;
     case 'participant_joined':
       names.set(msg.participant.id, msg.participant.name);
+      states.set(msg.participant.id, { mic: msg.participant.mic, camera: msg.participant.camera });
       renderCaption(msg.participant.id);
       log(`${msg.participant.name} joined`, 'good');
       break;
@@ -292,6 +313,22 @@ async function handle(msg) {
       removeTile(msg.participant.id);
       names.delete(msg.participant.id);
       break;
+    case 'participant_changed': {
+      const p = msg.participant;
+      const before = states.get(p.id);
+      states.set(p.id, { mic: p.mic, camera: p.camera });
+      renderCaption(p.id);
+      if (before && before.mic !== p.mic) log(`${p.name} ${p.mic ? 'unmuted' : 'muted'}`);
+      if (before && before.camera !== p.camera) log(`${p.name} turned their camera ${p.camera ? 'on' : 'off'}`);
+      break;
+    }
+    case 'speakers': {
+      // Everyone speaking now, including us; the tiles' outlines follow.
+      const was = speakers;
+      speakers = new Set(msg.speakers ?? []);
+      for (const id of new Set([...was, ...speakers])) renderCaption(id);
+      break;
+    }
     case 'estimate':
       downloadEstimate = msg.bitrate;
       break;
@@ -299,6 +336,40 @@ async function handle(msg) {
       log(`Server error: ${msg.error}`, 'bad');
       break;
   }
+}
+
+function micOn() {
+  return localStream?.getAudioTracks().some((t) => t.enabled) ?? false;
+}
+
+function cameraOn() {
+  return localStream?.getVideoTracks().some((t) => t.enabled) ?? false;
+}
+
+// Tells everyone (through the server) whether our mic and camera are on.
+// A disabled track still sends silence or black frames; the server stops
+// forwarding video from a camera that's off.
+function sendState() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  send({ type: 'state', mic: micOn(), camera: cameraOn() });
+  states.set(me, { mic: micOn(), camera: cameraOn() });
+  renderCaption(me);
+}
+
+function renderToggles() {
+  $('mic').textContent = micOn() ? 'Mute' : 'Unmute';
+  $('cam').textContent = cameraOn() ? 'Camera off' : 'Camera on';
+  $('mic').classList.toggle('off', !micOn());
+  $('cam').classList.toggle('off', !cameraOn());
+}
+
+function toggle(kind) {
+  const tracks = kind === 'mic' ? localStream?.getAudioTracks() : localStream?.getVideoTracks();
+  if (!tracks?.length) return;
+  const on = !tracks.some((t) => t.enabled);
+  tracks.forEach((t) => (t.enabled = on));
+  renderToggles();
+  sendState();
 }
 
 function leave() {
@@ -325,6 +396,9 @@ function leave() {
   }
   for (const id of [...tiles.keys()]) removeTile(id);
   names.clear();
+  states.clear();
+  speakers = new Set();
+  $('mic').hidden = $('cam').hidden = true;
   me = null;
   $('stats').replaceChildren();
   $('start').disabled = false;
@@ -462,3 +536,5 @@ $('room').value = params.get('room') || 'gym';
 try { $('name').value = localStorage.getItem('fitmeasure-name') || ''; } catch {}
 $('join').onsubmit = join;
 $('stop').onclick = leave;
+$('mic').onclick = () => toggle('mic');
+$('cam').onclick = () => toggle('cam');

@@ -10,6 +10,7 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
+	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -30,6 +31,10 @@ type upTrack struct {
 	kind     webrtc.RTPCodecType
 	codec    webrtc.RTPCodecCapability
 	receiver *webrtc.RTPReceiver
+
+	// audioLevelID is the header extension ID carrying each audio packet's
+	// loudness, as agreed with the publisher (0 if not).
+	audioLevelID uint8
 
 	closed atomic.Bool
 
@@ -72,7 +77,7 @@ func (l *layer) measure(payloadBytes int, now time.Time) {
 }
 
 func newUpTrack(owner *participant, remote *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) *upTrack {
-	return &upTrack{
+	t := &upTrack{
 		owner:    owner,
 		id:       owner.id + "-" + remote.ID(),
 		kind:     remote.Kind(),
@@ -81,6 +86,12 @@ func newUpTrack(owner *participant, remote *webrtc.TrackRemote, receiver *webrtc
 		layers:   make(map[string]*layer),
 		downs:    make(map[*participant]*downTrack),
 	}
+	for _, ext := range receiver.GetParameters().HeaderExtensions {
+		if ext.URI == sdp.AudioLevelURI {
+			t.audioLevelID = uint8(ext.ID)
+		}
+	}
+	return t
 }
 
 // addLayer registers a layer as it starts arriving.
@@ -105,6 +116,12 @@ func (t *upTrack) readLayer(remote *webrtc.TrackRemote) {
 		}
 
 		now := time.Now()
+		if t.audioLevelID != 0 {
+			var level rtp.AudioLevelExtension
+			if ext := pkt.GetExtension(t.audioLevelID); ext != nil && level.Unmarshal(ext) == nil && level.Level < speakingLevel {
+				t.owner.lastLoud.Store(now.UnixNano())
+			}
+		}
 		t.mu.Lock()
 		l := t.layers[rid]
 		wasLive := now.Sub(l.lastPacket) < layerTimeout
@@ -288,6 +305,10 @@ func (d *downTrack) retarget() {
 	}
 	if d.up.kind == webrtc.RTPCodecTypeAudio {
 		d.setTarget(layers[0].rid, true) // audio plays whatever the layout
+		return
+	}
+	if !d.up.owner.cameraOn() {
+		d.setTarget("", false) // camera off: the picture is black anyway
 		return
 	}
 	width, height, haveTile := d.sub.tileSize(d.up.owner.id)

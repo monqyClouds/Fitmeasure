@@ -24,6 +24,15 @@ abstract final class SignalType {
 
   /// Server to client: how fast the server estimates it can send to us.
   static const estimate = 'estimate';
+
+  /// Client to server: whether our mic and camera are on.
+  static const state = 'state';
+
+  /// Server to client: someone's mic or camera changed.
+  static const participantChanged = 'participant_changed';
+
+  /// Server to client: who is speaking now.
+  static const speakers = 'speakers';
 }
 
 abstract final class PeerName {
@@ -32,13 +41,25 @@ abstract final class PeerName {
 }
 
 class LiveParticipant {
-  const LiveParticipant({required this.id, required this.name});
+  const LiveParticipant({
+    required this.id,
+    required this.name,
+    this.mic = true,
+    this.camera = true,
+  });
 
   factory LiveParticipant.fromJson(Map<String, dynamic> json) =>
-      LiveParticipant(id: json['id'] as String, name: json['name'] as String);
+      LiveParticipant(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        mic: json['mic'] as bool? ?? true,
+        camera: json['camera'] as bool? ?? true,
+      );
 
   final String id;
   final String name;
+  final bool mic;
+  final bool camera;
 }
 
 /// An ICE candidate as JSON carries it (RTCIceCandidateInit).
@@ -90,6 +111,9 @@ class SignalMessage {
     this.iceServers = const [],
     this.tiles,
     this.bitrate,
+    this.mic,
+    this.camera,
+    this.speakers = const [],
   });
 
   factory SignalMessage.decode(String text) {
@@ -104,6 +128,9 @@ class SignalMessage {
       },
       error: json['error'] as String?,
       bitrate: json['bitrate'] as int?,
+      speakers: [
+        for (final s in (json['speakers'] as List?) ?? const []) s as String,
+      ],
       id: json['id'] as String?,
       participant: switch (json['participant']) {
         final Map<String, dynamic> p => LiveParticipant.fromJson(p),
@@ -137,11 +164,20 @@ class SignalMessage {
   /// In an estimate, in bit/s.
   final int? bitrate;
 
+  /// In a state: whether our mic and camera are on.
+  final bool? mic;
+  final bool? camera;
+
+  /// In a speakers message: who is speaking (participant IDs).
+  final List<String> speakers;
+
   String encode() => jsonEncode({
     'type': type,
     'pc': ?pc,
     'sdp': ?sdp,
     if (candidate != null) 'candidate': candidate!.toJson(),
     if (tiles != null) 'tiles': [for (final t in tiles!) t.toJson()],
+    'mic': ?mic,
+    'camera': ?camera,
   });
 }

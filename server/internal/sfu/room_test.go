@@ -728,6 +728,142 @@ func TestRoomSendsEstimate(t *testing.T) {
 	}
 }
 
+// waitEvent waits for an event of the given type that ok accepts.
+func waitEvent(t *testing.T, p *testPeer, typ string, ok func(signal.Message) bool) signal.Message {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case m := <-p.events:
+			if m.Type == typ && ok(m) {
+				return m
+			}
+		case <-deadline:
+			t.Fatalf("no %s event matching", typ)
+			return signal.Message{}
+		}
+	}
+}
+
+// The server tells everyone who is speaking, from the loudness each audio
+// packet carries (RFC 6464), and stops counting someone once they're quiet.
+func TestRoomSpeakers(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	a := joinRoom(t, url, "ada")
+	b := joinRoom(t, url, "bo")
+
+	// a also publishes a microphone: Opus packets with an audio level.
+	mic, err := webrtc.NewTrackLocalStaticRTP(rtc.Opus, "audio", "ada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := a.pub.AddTrack(mic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer, err := a.pub.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.pub.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	a.send(signal.Message{Type: signal.TypeOffer, PC: signal.PCPublish, SDP: offer.SDP})
+
+	var level atomic.Int32
+	level.Store(20) // loud
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		var extID uint8
+		tick := time.NewTicker(20 * time.Millisecond)
+		defer tick.Stop()
+		for seq := uint16(0); ; seq++ {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+			}
+			for _, ext := range sender.GetParameters().HeaderExtensions {
+				if ext.URI == sdp.AudioLevelURI {
+					extID = uint8(ext.ID)
+				}
+			}
+			if extID == 0 {
+				continue
+			}
+			pkt := &rtp.Packet{Header: rtp.Header{Version: 2, PayloadType: 111, SequenceNumber: seq, Timestamp: uint32(seq) * 960}, Payload: []byte{0xfc, 0xff, 0xfe}}
+			payload, _ := rtp.AudioLevelExtension{Level: uint8(level.Load()), Voice: true}.Marshal()
+			_ = pkt.Header.SetExtension(extID, payload)
+			_ = mic.WriteRTP(pkt)
+		}
+	}()
+
+	contains := func(list []string, id string) bool {
+		for _, x := range list {
+			if x == id {
+				return true
+			}
+		}
+		return false
+	}
+	waitEvent(t, b, signal.TypeSpeakers, func(m signal.Message) bool { return contains(m.Speakers, a.id) })
+	level.Store(127) // silence
+	waitEvent(t, b, signal.TypeSpeakers, func(m signal.Message) bool { return !contains(m.Speakers, a.id) })
+}
+
+// Turning a camera off tells everyone and stops forwarding it; turning it
+// back on resumes it.
+func TestRoomCameraOff(t *testing.T) {
+	url := startRooms(t, 0) + "gym"
+	stop := make(chan struct{})
+	defer close(stop)
+	a := joinRoom(t, url, "ada")
+	go a.publishUntil(stop)
+	b := joinRoom(t, url, "bo")
+
+	received := func() int {
+		b.videoMu.Lock()
+		defer b.videoMu.Unlock()
+		n := 0
+		for _, r := range b.videoLog {
+			if r.from == a.id {
+				n++
+			}
+		}
+		return n
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for received() == 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if received() == 0 {
+		t.Fatal("b never received a's video")
+	}
+
+	off, on := false, true
+	a.send(signal.Message{Type: signal.TypeState, Camera: &off})
+	m := waitEvent(t, b, signal.TypeParticipantChanged, func(m signal.Message) bool { return m.Participant.ID == a.id })
+	if m.Participant.Camera || !m.Participant.Mic {
+		t.Fatalf("got %+v, want camera off and mic still on", m.Participant)
+	}
+	time.Sleep(500 * time.Millisecond)
+	before := received()
+	time.Sleep(time.Second)
+	if after := received(); after != before {
+		t.Fatalf("still forwarding a's video with the camera off (%d more packets)", after-before)
+	}
+
+	a.send(signal.Message{Type: signal.TypeState, Camera: &on})
+	deadline = time.Now().Add(10 * time.Second)
+	for received() == before && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if received() == before {
+		t.Fatal("video didn't resume with the camera back on")
+	}
+}
+
 func TestRoomFull(t *testing.T) {
 	url := startRooms(t, 2) + "gym"
 	joinRoom(t, url, "ada")

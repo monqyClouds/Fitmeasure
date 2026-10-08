@@ -34,6 +34,15 @@ const (
 	// Server to client, every few seconds: how fast the server estimates it
 	// can send to this client (stage 5), in Bitrate.
 	TypeEstimate = "estimate"
+
+	// Stage 6. Client to server: my microphone and camera, in Mic and
+	// Camera, whenever either changes.
+	TypeState = "state"
+	// Server to client: someone's state changed (Participant).
+	TypeParticipantChanged = "participant_changed"
+	// Server to client: who is speaking now (Speakers, participant IDs),
+	// whenever that changes.
+	TypeSpeakers = "speakers"
 )
 
 // Peer connection names. In a room each participant has two: one to publish
@@ -67,6 +76,13 @@ type Message struct {
 
 	// Bitrate, in an estimate, is in bit/s.
 	Bitrate int `json:"bitrate,omitempty"`
+
+	// Mic and Camera, in a state, are whether each is on.
+	Mic    *bool `json:"mic,omitempty"`
+	Camera *bool `json:"camera,omitempty"`
+
+	// Speakers, in a speakers message. Missing means nobody.
+	Speakers []string `json:"speakers,omitempty"`
 }
 
 // Tile is the size of one person's video on screen, in device pixels.
@@ -80,8 +96,10 @@ type Tile struct {
 // stream whose ID is the participant's ID, so clients can tell whose video is
 // whose.
 type Participant struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Mic    bool   `json:"mic"`
+	Camera bool   `json:"camera"`
 }
 
 const (

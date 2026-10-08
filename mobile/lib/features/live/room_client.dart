@@ -53,6 +53,8 @@ class RemoteParticipant {
 
   final String id;
   String name;
+  bool mic = true;
+  bool camera = true;
   final renderer = RTCVideoRenderer();
   MediaStream? stream;
   bool hasVideo = false;
@@ -130,6 +132,9 @@ class RoomClient extends ChangeNotifier {
   /// Everyone else, in the order they appeared.
   final participants = <String, RemoteParticipant>{};
 
+  /// Who is speaking now (participant IDs, ours included), from the server.
+  Set<String> speaking = {};
+
   bool get micOn => localStream.getAudioTracks().any((t) => t.enabled);
   bool get cameraOn => localStream.getVideoTracks().any((t) => t.enabled);
   bool frontCamera = true;
@@ -192,8 +197,11 @@ class RoomClient extends ChangeNotifier {
       case SignalType.welcome:
         myId = msg.id;
         for (final p in msg.participants) {
-          participants[p.id] = RemoteParticipant(p.id, p.name);
+          participants[p.id] = RemoteParticipant(p.id, p.name)
+            ..mic = p.mic
+            ..camera = p.camera;
         }
+        _sendState();
         notifyListeners();
         await _connect(msg.iceServers);
 
@@ -234,7 +242,21 @@ class RoomClient extends ChangeNotifier {
 
       case SignalType.participantJoined:
         final p = msg.participant!;
-        (participants[p.id] ??= RemoteParticipant(p.id, p.name)).name = p.name;
+        (participants[p.id] ??= RemoteParticipant(p.id, p.name))
+          ..name = p.name
+          ..mic = p.mic
+          ..camera = p.camera;
+        notifyListeners();
+
+      case SignalType.participantChanged:
+        final p = msg.participant!;
+        participants[p.id]
+          ?..mic = p.mic
+          ..camera = p.camera;
+        notifyListeners();
+
+      case SignalType.speakers:
+        speaking = msg.speakers.toSet();
         notifyListeners();
 
       case SignalType.participantLeft:
@@ -459,6 +481,7 @@ class RoomClient extends ChangeNotifier {
     for (final t in localStream.getAudioTracks()) {
       t.enabled = on;
     }
+    _sendState();
     notifyListeners();
   }
 
@@ -466,7 +489,16 @@ class RoomClient extends ChangeNotifier {
     for (final t in localStream.getVideoTracks()) {
       t.enabled = on;
     }
+    _sendState();
     notifyListeners();
+  }
+
+  /// Tells everyone (through the server) whether our mic and camera are
+  /// on. A disabled track still sends silence or black frames; the server
+  /// stops forwarding video from a camera that's off.
+  void _sendState() {
+    if (myId == null || _closed) return;
+    _send(SignalMessage(type: SignalType.state, mic: micOn, camera: cameraOn));
   }
 
   Future<void> flipCamera() async {

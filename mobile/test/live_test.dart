@@ -73,6 +73,31 @@ void main() {
     expect(m.bitrate, 850000);
   });
 
+  test('decodes state changes and speakers', () {
+    final changed = SignalMessage.decode(
+      '{"type": "participant_changed", "participant": {"id": "p1", "name": "Ada", "mic": false, "camera": true}}',
+    );
+    expect(changed.participant!.mic, isFalse);
+    expect(changed.participant!.camera, isTrue);
+    expect(
+      SignalMessage.decode('{"type": "speakers", "speakers": ["p1", "p2"]}')
+          .speakers,
+      ['p1', 'p2'],
+    );
+    expect(SignalMessage.decode('{"type": "speakers"}').speakers, isEmpty);
+  });
+
+  test('encodes our state', () {
+    expect(
+      const SignalMessage(
+        type: SignalType.state,
+        mic: false,
+        camera: true,
+      ).encode(),
+      '{"type":"state","mic":false,"camera":true}',
+    );
+  });
+
   test('encodes a layout', () {
     expect(
       const SignalMessage(
