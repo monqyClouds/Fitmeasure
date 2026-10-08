@@ -1,2 +1,5 @@
 # Local settings; see .env.example
 .env
+
+# Local TLS certificates, e.g. from mkcert
+*.pem
