@@ -133,6 +133,28 @@ Then open <https://live.somto.si>. Logs: `journalctl -u fitmeasure -f`.
 
 Run `deploy/deploy.sh root@live.somto.si` again.
 
+### Behind an existing nginx
+
+On a machine where nginx already serves other sites on 80 and 443 (the
+current staging droplet), Fitmeasure listens on `127.0.0.1:8090` and nginx
+proxies `live.somto.si` to it. Media and TURN don't go through nginx; they
+use their own ports. TURN over TLS on 443 isn't available this way, because
+nginx has 443.
+
+1. **DNS:** an A record for `live.somto.si` pointing at the droplet's own
+   public IP. On a droplet with a reserved IP, use the droplet's own address
+   (`ip -4 addr show eth0`), not the reserved one: media replies leave from
+   the droplet's own address, and clients must send to the same one.
+2. **Settings:** `/etc/fitmeasure/fitmeasure.env` from
+   [`deploy/fitmeasure-behind-nginx.env.example`](deploy/fitmeasure-behind-nginx.env.example).
+3. **Install:** `deploy/deploy.sh root@<droplet>`.
+4. **nginx:** copy [`deploy/nginx-site.conf`](deploy/nginx-site.conf) to
+   `/etc/nginx/sites-available/live.somto.si`, link it into `sites-enabled`,
+   then `nginx -t && systemctl reload nginx`.
+5. **HTTPS:** `certbot --nginx -d live.somto.si`.
+
+Open UDP 7882, TCP 7881 and UDP/TCP 3478 if a firewall is in the way.
+
 ## Test
 
 ```sh
