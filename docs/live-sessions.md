@@ -37,8 +37,8 @@ Not in scope for now:
 | Term | Meaning |
 |---|---|
 | **Account** | An online identity (name, email). A local profile on the phone can link to one. |
-| **Group** | A persistent set of members, e.g. "Morning crew". Has an owner. Sessions can be started from it. |
-| **Session** | One live video session. Either belongs to a group or is a one-off. |
+| **Group** | A persistent set of members, e.g. "Morning crew". Has one owner and any number of admins. Sessions can be started from it, now or scheduled. |
+| **Session** | One live video session. Either belongs to a group or is a one-off, and either starts now or is scheduled. |
 | **Host** | The person who started the session. In trainer mode, the host is the trainer. |
 | **Moderator** | A participant the host has promoted. |
 | **Participant** | Anyone else in the session. |
@@ -81,7 +81,23 @@ moderate" is on.
 - A removed person can't rejoin the same session, not even through the
   waiting room.
 
-### 3.3 Roles and permissions
+### 3.3 Group roles
+
+| Action | Owner | Admin | Member |
+|---|---|---|---|
+| Start or schedule a session for the group | ✓ | ✓ | ✓ |
+| Invite people, approve and remove members | ✓ | ✓ | ✗ |
+| Make or remove admins | ✓ | ✗ | ✗ |
+| Rename or delete the group | ✓ | ✗ | ✗ |
+| Transfer ownership | ✓ | ✗ | ✗ |
+
+The owner can't be removed. If the owner deletes their account, ownership
+passes to the longest-standing admin, otherwise the longest-standing member.
+
+Group roles and session roles are separate: whoever starts a session is its
+host, whatever their group role.
+
+### 3.4 Session roles and permissions
 
 | Action | Host | Moderator | Participant | Participant, "everyone can moderate" on |
 |---|---|---|---|---|
@@ -99,7 +115,7 @@ moderate" is on.
 Everyone can always mute or unmute themselves, turn their own camera on or off,
 pin anyone on their own screen, and change their own volume for others.
 
-### 3.4 Muting and unmuting
+### 3.5 Muting and unmuting
 
 - **Mute** takes effect immediately. The person sees who muted them.
 - **Unmute** is a request: the person gets "Alex asks you to unmute" with
@@ -107,12 +123,12 @@ pin anyone on their own screen, and change their own volume for others.
 - Above 4 participants, people join with their mic off. They can unmute
   themselves.
 
-### 3.5 Visibility in trainer mode
+### 3.6 Visibility in trainer mode
 
 - Each participant picks **Everyone** or **Trainer only** when joining, and
   can change it at any time.
-- "Trainer only" means the participant's **video** is sent only to the host.
-  Their **audio** still goes to everyone.
+- "Trainer only" means the participant's **video** is sent only to the host,
+  not to moderators. Their **audio** still goes to everyone.
 - Others see a "trainer only" participant as an avatar tile with their name,
   mic status and speaking indicator, but no video.
 - If the host role passes to someone else, "trainer only" video follows the
@@ -121,7 +137,7 @@ pin anyone on their own screen, and change their own volume for others.
   "Trainer only" participants are asked "Switch to visible to everyone?", and
   stay trainer-only until they accept.
 
-### 3.6 When the host leaves
+### 3.7 When the host leaves
 
 - The host can hand over host to anyone before leaving.
 - If the host just drops out, the session continues. After 2 minutes without
@@ -130,6 +146,23 @@ pin anyone on their own screen, and change their own volume for others.
 - If the original host rejoins after a handover, they're a moderator unless the
   new host hands it back.
 - The session ends when the last person leaves, or when the host ends it.
+
+### 3.8 Scheduled sessions
+
+- A session can **start now** or be **scheduled** for a date and time, with a
+  title and optional description. In a group, any member can schedule; the
+  person who scheduled it becomes the host.
+- Invited people (group members, or everyone with the link for a one-off) get
+  a reminder **15 minutes before**, by push notification in the Android app and
+  by email as a fallback (which also covers web and iPhone users).
+- The session opens **10 minutes early**. People who arrive before the host
+  wait in a "starting soon" screen. When the host arrives, members go straight
+  in and others enter the waiting room.
+- The host can edit or cancel a scheduled session, and everyone invited is
+  notified.
+- A scheduled session the host never starts is marked missed 1 hour after its
+  start time.
+- No repeating schedules yet ("every Monday at 7"); that's a natural next step.
 
 ## 4. Architecture
 
@@ -322,7 +355,6 @@ users (
 groups (
   id uuid primary key,
   name text not null,
-  owner_id uuid not null references users,
   default_mode text not null check (default_mode in ('group', 'trainer')),
   created_at timestamptz not null default now()
 )
@@ -330,7 +362,7 @@ groups (
 group_members (
   group_id uuid references groups on delete cascade,
   user_id uuid references users on delete cascade,
-  role text not null check (role in ('owner', 'member')),
+  role text not null check (role in ('owner', 'admin', 'member')),
   joined_at timestamptz not null default now(),
   primary key (group_id, user_id)
 )
@@ -343,9 +375,37 @@ sessions (
   everyone_can_moderate boolean not null default false,
   locked boolean not null default false,
   invite_code text unique not null,                     -- for the share link
-  status text not null check (status in ('live', 'ended')),
-  started_at timestamptz not null default now(),
+  title text,
+  description text,
+  status text not null
+    check (status in ('scheduled', 'live', 'ended', 'cancelled', 'missed')),
+  scheduled_for timestamptz,                            -- null for start now
+  started_at timestamptz,
   ended_at timestamptz
+)
+
+login_codes (
+  email text not null,
+  code_hash text not null,                              -- never store the code
+  expires_at timestamptz not null,                      -- 10 minutes
+  attempts int not null default 0,                      -- locked after 5
+  primary key (email, code_hash)
+)
+
+auth_sessions (
+  id uuid primary key,
+  user_id uuid not null references users on delete cascade,
+  refresh_token_hash text unique not null,
+  device text,
+  created_at timestamptz not null default now(),
+  last_used_at timestamptz not null default now()
+)
+
+push_tokens (
+  user_id uuid references users on delete cascade,
+  token text not null,                                  -- Firebase Cloud Messaging
+  platform text not null check (platform in ('android', 'web')),
+  primary key (user_id, token)
 )
 
 session_participants (
@@ -361,6 +421,9 @@ session_participants (
 )
 ```
 
+The group owner is the `group_members` row with role `owner`. A unique
+partial index ensures exactly one per group.
+
 Attendance comes from `session_participants`, updated from the SFU's joined
 and left events (section 4.5).
 
@@ -372,14 +435,24 @@ All endpoints need a signed-in user. `{id}` is a UUID.
 
 | Method and path | Purpose |
 |---|---|
-| `POST /auth/...` | Sign-in: email one-time code, or Google Sign-In (see open questions) |
+| `POST /auth/code` | Email a 6-digit sign-in code (rate limited per email and IP) |
+| `POST /auth/verify` | Exchange email and code for an access token (15 min) and a refresh token |
+| `POST /auth/refresh` | New access token from the refresh token |
+| `POST /auth/logout` | Revoke this device's refresh token |
+| `DELETE /me` | Delete the account |
+| `POST /me/push-tokens` | Register this device for push notifications |
 | `GET /me` | Current user |
 | `POST /groups` | Create a group |
 | `GET /groups` | My groups |
 | `GET /groups/{id}` | Group details and members |
-| `DELETE /groups/{id}/members/{userId}` | Remove a member (owner) |
+| `PATCH /groups/{id}/members/{userId}` | Change a member's role (owner) |
+| `DELETE /groups/{id}/members/{userId}` | Remove a member (owner or admin) |
+| `POST /groups/{id}/transfer` | Transfer ownership (owner) |
 | `POST /groups/{id}/invite` | Create a share link for the group |
-| `POST /sessions` | Start a session (one-off, or with `group_id`), choosing the mode |
+| `POST /sessions` | Start now or schedule a session (one-off, or with `group_id`), choosing the mode |
+| `GET /sessions` | My upcoming and live sessions |
+| `PATCH /sessions/{id}` | Edit a scheduled session (host) |
+| `POST /sessions/{id}/cancel` | Cancel a scheduled session (host) |
 | `GET /sessions/{inviteCode}` | Session preview before joining: name, host, mode, how many people are in it |
 | `POST /sessions/{id}/join` | Ask to join. Returns `admitted`, `waiting` or `refused`, and the WebSocket URL. |
 | `POST /sessions/{id}/end` | End for everyone (host) |
@@ -425,19 +498,21 @@ Server → client:
 
 ### 7.1 Screens
 
-1. **Live tab** (new, in the app): my groups, live sessions I can join, "Start
-   session".
-2. **Start session**: pick a group or one-off, then the mode. Shows the share
-   link.
-3. **Pre-join**: camera preview, mic and camera toggles, name. In trainer mode,
+1. **Sign-in**: email, then the 6-digit code.
+2. **Live tab** (new, in the app): live now, upcoming sessions, my groups, and
+   "Start now" or "Schedule".
+3. **Start or schedule**: pick a group or one-off, the mode, and now or a date
+   and time. Shows the share link.
+4. **Pre-join**: camera preview, mic and camera toggles, name. In trainer mode,
    a visibility choice. A hint about using earbuds and placing the phone.
-4. **Waiting room**: "Waiting for the host to let you in".
-5. **In session**: video layout (below), a control bar (mic, camera, flip
+5. **Waiting room**, or **starting soon** before the host arrives: "Waiting for the host to let you in".
+6. **In session**: video layout (below), a control bar (mic, camera, flip
    camera, participants, leave), and the participants sheet with moderation
    actions.
-6. **Group page**: members, invite link, start a session.
+7. **Group page**: members and their roles, invite link, upcoming sessions,
+   start or schedule a session.
 
-The web client covers screens 3–5, entered from a link.
+The web client covers sign-in and screens 4–6, entered from a link.
 
 ### 7.2 Adaptive layouts
 
@@ -472,6 +547,10 @@ Everywhere:
 
 ## 8. Security and privacy
 
+- Sign-in is passwordless: a 6-digit code emailed to the user, valid for 10
+  minutes, stored only as a hash, locked after 5 wrong tries, and rate limited.
+  Sending email needs a provider (e.g. Amazon SES, Postmark or Resend) and a
+  domain set up for it (SPF and DKIM), or codes land in spam.
 - All traffic is encrypted: HTTPS and WSS for control, and WebRTC media (DTLS
   and SRTP) to the SFU. The SFU can see media in transit. End-to-end
   encryption is possible later, but it limits some features.
@@ -510,8 +589,8 @@ milestone gives something usable.
 
 1. **S1–S2 in the browser:** echo, then a 4-person room on one Wi-Fi. Go
    service skeleton with the session WebSocket, no accounts yet.
-2. **Backend foundations:** Postgres, sign-in, users, one-off sessions,
-   invite links.
+2. **Backend foundations:** Postgres, email-code sign-in, users, one-off
+   sessions, invite links.
 3. **S3 and the Android app:** deploy with TURN, Android joins, pre-join
    screen, group-mode grid, mic and camera, leave.
 4. **S4–S5:** simulcast, layer choice from tile size, bandwidth estimation,
@@ -521,23 +600,33 @@ milestone gives something usable.
    indicators, ICE restart.
 6. **Trainer mode:** layouts, visibility choice, host-only video for "trainer
    only".
-7. **Groups:** create, invite, members rejoin directly, remove from group.
+7. **Groups and scheduling:** create, invite, admins, members rejoin
+   directly, remove from group, scheduled sessions with push and email
+   reminders.
 8. **Web client polish:** waiting room and the full session in the browser
    (Android Chrome, desktop, iPhone Safari).
 9. **Release prep:** foreground service polish, account deletion, privacy
    policy, Play closed test, a 16-person, one-hour test session.
 
-## 11. Open questions
+## 11. Repository layout
 
-1. **Sign-in method:** email one-time code, Google Sign-In, or both?
-2. **Can moderators see "trainer only" video,** or only the trainer? This
-   draft says only the host.
-3. **Group ownership:** can a group have several admins, and can ownership be
-   transferred?
-4. **Scheduled sessions** with reminders (needs push notifications), or start
-   them on the spot for now?
-5. **Web client technology:** Flutter web (shares code with the app) or a small
-   JavaScript page (lighter, faster to load, and closest to the browser's
-   WebRTC API, which suits the learning goal)?
-6. **Repository layout:** the Go backend in this repository (e.g. `server/`)
-   or a repository of its own?
+Everything stays in this repository. The Flutter app moves into `mobile/`
+before backend work starts, in its own commit, so history stays easy to follow
+(`git log --follow` still tracks files).
+
+```
+mobile/        Flutter app (Android, iOS, and later the web client)
+server/        Go backend: control plane and SFU
+  cmd/fitmeasure-server/
+  internal/auth, groups, sessions, hub (session WebSocket), sfu, store
+  migrations/
+docs/          design docs, including this one
+.github/       CI: builds the app from mobile/, tests and builds the server
+```
+
+## 12. Open questions
+
+1. **Web client technology:** Flutter web (shares the app's code, including the
+   signalling library) or a small JavaScript page (lighter and closer to the
+   browser's WebRTC API)?
+2. **Email provider** for sign-in codes and reminders, and a domain for it.
