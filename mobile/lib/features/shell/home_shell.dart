@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
 import '../library/library_screen.dart';
+import '../live/live_screen.dart';
 import '../plans/plans_screen.dart';
 import '../progress/progress_screen.dart';
 import '../today/today_screen.dart';
@@ -22,6 +23,7 @@ class _HomeShellState extends State<HomeShell> {
     PlansScreen(key: PageStorageKey('plans')),
     LibraryScreen(key: PageStorageKey('library')),
     ProgressScreen(key: PageStorageKey('progress')),
+    LiveScreen(key: PageStorageKey('live')),
   ];
 
   @override
@@ -62,6 +64,11 @@ class _HomeShellState extends State<HomeShell> {
             icon: Icon(Icons.insights_outlined),
             selectedIcon: Icon(Icons.insights_rounded),
             label: 'Progress',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.videocam_outlined),
+            selectedIcon: Icon(Icons.videocam_rounded),
+            label: 'Live',
           ),
         ],
       ),

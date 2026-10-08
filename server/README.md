@@ -8,7 +8,7 @@ scratch on [Pion](https://github.com/pion/webrtc), in the stages described in
 |---|---|
 | S1. Echo: your camera goes to the server and comes back | ✅ |
 | S2. Small room: up to 4 people, everyone sees everyone | ✅ |
-| S3. Real networks: TURN, deployment, the Android app | in progress: TURN and deployment done, Android app next |
+| S3. Real networks: TURN, deployment, the Android app | built; the 30-minute phone-on-4G test is next |
 | S4. Simulcast | |
 | S5. Bandwidth estimation | |
 | S6. Session features | |
