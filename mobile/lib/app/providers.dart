@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/backup/backup_service.dart';
 import '../data/db/database.dart';
+import '../data/link_preview.dart';
 import '../data/repos/cycle_repo.dart';
 import '../data/repos/exercise_repo.dart';
 import '../data/repos/measurement_repo.dart';
@@ -32,6 +33,7 @@ final cycleRepoProvider = Provider(
 final exerciseRepoProvider = Provider(
   (ref) => ExerciseRepo(ref.watch(databaseProvider)),
 );
+final linkPreviewerProvider = Provider((ref) => LinkPreviewer());
 final planRepoProvider = Provider(
   (ref) => PlanRepo(ref.watch(databaseProvider)),
 );

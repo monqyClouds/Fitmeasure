@@ -256,6 +256,44 @@ void main() {
     expect(await exercises.watchMedia(bench.id, a).first, hasLength(1));
   });
 
+  test(
+    'a video link keeps its preview; a title never replaces a label',
+    () async {
+      final a = await profiles.create(name: 'A', color: 1);
+      final bench = (await db.select(db.exercises).get()).firstWhere(
+        (e) => e.name == 'Bench Press',
+      );
+      for (final label in [null, 'Mine']) {
+        await exercises.addLink(
+          exerciseId: bench.id,
+          profileId: a,
+          url: 'https://example.com/$label',
+          label: label,
+        );
+      }
+      var links = await exercises.watchMedia(bench.id, a).first;
+      expect(links.map((l) => l.thumbUrl), [
+        null,
+        null,
+      ], reason: 'not looked up');
+
+      for (final l in links) {
+        await exercises.setPreview(l.id, title: 'Page title');
+      }
+      links = await exercises.watchMedia(bench.id, a).first;
+      expect(
+        links.map((l) => l.label),
+        unorderedEquals(['Page title', 'Mine']),
+      );
+      // Looked up, no picture: not looked up again.
+      expect(links.map((l) => l.thumbUrl), ['', '']);
+
+      await exercises.setLabel(links.first.id, '  ');
+      links = await exercises.watchMedia(bench.id, a).first;
+      expect(links.where((l) => l.label == null), hasLength(1));
+    },
+  );
+
   test('deleting a profile removes its data and media folder', () async {
     final a = await profiles.create(name: 'A', color: 1);
     final bench = (await db.select(db.exercises).get()).first;

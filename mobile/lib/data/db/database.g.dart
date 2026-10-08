@@ -1350,6 +1350,17 @@ class $ExerciseMediaTable extends ExerciseMedia
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _thumbUrlMeta = const VerificationMeta(
+    'thumbUrl',
+  );
+  @override
+  late final GeneratedColumn<String> thumbUrl = GeneratedColumn<String>(
+    'thumb_url',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _createdAtMeta = const VerificationMeta(
     'createdAt',
   );
@@ -1370,6 +1381,7 @@ class $ExerciseMediaTable extends ExerciseMedia
     kind,
     uri,
     label,
+    thumbUrl,
     createdAt,
   ];
   @override
@@ -1417,6 +1429,12 @@ class $ExerciseMediaTable extends ExerciseMedia
         label.isAcceptableOrUnknown(data['label']!, _labelMeta),
       );
     }
+    if (data.containsKey('thumb_url')) {
+      context.handle(
+        _thumbUrlMeta,
+        thumbUrl.isAcceptableOrUnknown(data['thumb_url']!, _thumbUrlMeta),
+      );
+    }
     if (data.containsKey('created_at')) {
       context.handle(
         _createdAtMeta,
@@ -1458,6 +1476,10 @@ class $ExerciseMediaTable extends ExerciseMedia
         DriftSqlType.string,
         data['${effectivePrefix}label'],
       ),
+      thumbUrl: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}thumb_url'],
+      ),
       createdAt: attachedDatabase.typeMapping.read(
         DriftSqlType.dateTime,
         data['${effectivePrefix}created_at'],
@@ -1483,6 +1505,11 @@ class MediaItem extends DataClass implements Insertable<MediaItem> {
   /// Absolute path inside the app's storage for images/videos, or a URL.
   final String uri;
   final String? label;
+
+  /// For a link: the picture its page offers for previews, '' if it has
+  /// none, or null if not looked up yet. YouTube's is worked out from the
+  /// video ID instead.
+  final String? thumbUrl;
   final DateTime createdAt;
   const MediaItem({
     required this.id,
@@ -1491,6 +1518,7 @@ class MediaItem extends DataClass implements Insertable<MediaItem> {
     required this.kind,
     required this.uri,
     this.label,
+    this.thumbUrl,
     required this.createdAt,
   });
   @override
@@ -1508,6 +1536,9 @@ class MediaItem extends DataClass implements Insertable<MediaItem> {
     if (!nullToAbsent || label != null) {
       map['label'] = Variable<String>(label);
     }
+    if (!nullToAbsent || thumbUrl != null) {
+      map['thumb_url'] = Variable<String>(thumbUrl);
+    }
     map['created_at'] = Variable<DateTime>(createdAt);
     return map;
   }
@@ -1522,6 +1553,9 @@ class MediaItem extends DataClass implements Insertable<MediaItem> {
       label: label == null && nullToAbsent
           ? const Value.absent()
           : Value(label),
+      thumbUrl: thumbUrl == null && nullToAbsent
+          ? const Value.absent()
+          : Value(thumbUrl),
       createdAt: Value(createdAt),
     );
   }
@@ -1540,6 +1574,7 @@ class MediaItem extends DataClass implements Insertable<MediaItem> {
       ),
       uri: serializer.fromJson<String>(json['uri']),
       label: serializer.fromJson<String?>(json['label']),
+      thumbUrl: serializer.fromJson<String?>(json['thumbUrl']),
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
     );
   }
@@ -1555,6 +1590,7 @@ class MediaItem extends DataClass implements Insertable<MediaItem> {
       ),
       'uri': serializer.toJson<String>(uri),
       'label': serializer.toJson<String?>(label),
+      'thumbUrl': serializer.toJson<String?>(thumbUrl),
       'createdAt': serializer.toJson<DateTime>(createdAt),
     };
   }
@@ -1566,6 +1602,7 @@ class MediaItem extends DataClass implements Insertable<MediaItem> {
     MediaKind? kind,
     String? uri,
     Value<String?> label = const Value.absent(),
+    Value<String?> thumbUrl = const Value.absent(),
     DateTime? createdAt,
   }) => MediaItem(
     id: id ?? this.id,
@@ -1574,6 +1611,7 @@ class MediaItem extends DataClass implements Insertable<MediaItem> {
     kind: kind ?? this.kind,
     uri: uri ?? this.uri,
     label: label.present ? label.value : this.label,
+    thumbUrl: thumbUrl.present ? thumbUrl.value : this.thumbUrl,
     createdAt: createdAt ?? this.createdAt,
   );
   MediaItem copyWithCompanion(ExerciseMediaCompanion data) {
@@ -1586,6 +1624,7 @@ class MediaItem extends DataClass implements Insertable<MediaItem> {
       kind: data.kind.present ? data.kind.value : this.kind,
       uri: data.uri.present ? data.uri.value : this.uri,
       label: data.label.present ? data.label.value : this.label,
+      thumbUrl: data.thumbUrl.present ? data.thumbUrl.value : this.thumbUrl,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
     );
   }
@@ -1599,14 +1638,23 @@ class MediaItem extends DataClass implements Insertable<MediaItem> {
           ..write('kind: $kind, ')
           ..write('uri: $uri, ')
           ..write('label: $label, ')
+          ..write('thumbUrl: $thumbUrl, ')
           ..write('createdAt: $createdAt')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode =>
-      Object.hash(id, profileId, exerciseId, kind, uri, label, createdAt);
+  int get hashCode => Object.hash(
+    id,
+    profileId,
+    exerciseId,
+    kind,
+    uri,
+    label,
+    thumbUrl,
+    createdAt,
+  );
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -1617,6 +1665,7 @@ class MediaItem extends DataClass implements Insertable<MediaItem> {
           other.kind == this.kind &&
           other.uri == this.uri &&
           other.label == this.label &&
+          other.thumbUrl == this.thumbUrl &&
           other.createdAt == this.createdAt);
 }
 
@@ -1627,6 +1676,7 @@ class ExerciseMediaCompanion extends UpdateCompanion<MediaItem> {
   final Value<MediaKind> kind;
   final Value<String> uri;
   final Value<String?> label;
+  final Value<String?> thumbUrl;
   final Value<DateTime> createdAt;
   const ExerciseMediaCompanion({
     this.id = const Value.absent(),
@@ -1635,6 +1685,7 @@ class ExerciseMediaCompanion extends UpdateCompanion<MediaItem> {
     this.kind = const Value.absent(),
     this.uri = const Value.absent(),
     this.label = const Value.absent(),
+    this.thumbUrl = const Value.absent(),
     this.createdAt = const Value.absent(),
   });
   ExerciseMediaCompanion.insert({
@@ -1644,6 +1695,7 @@ class ExerciseMediaCompanion extends UpdateCompanion<MediaItem> {
     required MediaKind kind,
     required String uri,
     this.label = const Value.absent(),
+    this.thumbUrl = const Value.absent(),
     this.createdAt = const Value.absent(),
   }) : profileId = Value(profileId),
        exerciseId = Value(exerciseId),
@@ -1656,6 +1708,7 @@ class ExerciseMediaCompanion extends UpdateCompanion<MediaItem> {
     Expression<String>? kind,
     Expression<String>? uri,
     Expression<String>? label,
+    Expression<String>? thumbUrl,
     Expression<DateTime>? createdAt,
   }) {
     return RawValuesInsertable({
@@ -1665,6 +1718,7 @@ class ExerciseMediaCompanion extends UpdateCompanion<MediaItem> {
       if (kind != null) 'kind': kind,
       if (uri != null) 'uri': uri,
       if (label != null) 'label': label,
+      if (thumbUrl != null) 'thumb_url': thumbUrl,
       if (createdAt != null) 'created_at': createdAt,
     });
   }
@@ -1676,6 +1730,7 @@ class ExerciseMediaCompanion extends UpdateCompanion<MediaItem> {
     Value<MediaKind>? kind,
     Value<String>? uri,
     Value<String?>? label,
+    Value<String?>? thumbUrl,
     Value<DateTime>? createdAt,
   }) {
     return ExerciseMediaCompanion(
@@ -1685,6 +1740,7 @@ class ExerciseMediaCompanion extends UpdateCompanion<MediaItem> {
       kind: kind ?? this.kind,
       uri: uri ?? this.uri,
       label: label ?? this.label,
+      thumbUrl: thumbUrl ?? this.thumbUrl,
       createdAt: createdAt ?? this.createdAt,
     );
   }
@@ -1712,6 +1768,9 @@ class ExerciseMediaCompanion extends UpdateCompanion<MediaItem> {
     if (label.present) {
       map['label'] = Variable<String>(label.value);
     }
+    if (thumbUrl.present) {
+      map['thumb_url'] = Variable<String>(thumbUrl.value);
+    }
     if (createdAt.present) {
       map['created_at'] = Variable<DateTime>(createdAt.value);
     }
@@ -1727,6 +1786,7 @@ class ExerciseMediaCompanion extends UpdateCompanion<MediaItem> {
           ..write('kind: $kind, ')
           ..write('uri: $uri, ')
           ..write('label: $label, ')
+          ..write('thumbUrl: $thumbUrl, ')
           ..write('createdAt: $createdAt')
           ..write(')'))
         .toString();
@@ -8473,6 +8533,7 @@ typedef $$ExerciseMediaTableCreateCompanionBuilder =
       required MediaKind kind,
       required String uri,
       Value<String?> label,
+      Value<String?> thumbUrl,
       Value<DateTime> createdAt,
     });
 typedef $$ExerciseMediaTableUpdateCompanionBuilder =
@@ -8483,6 +8544,7 @@ typedef $$ExerciseMediaTableUpdateCompanionBuilder =
       Value<MediaKind> kind,
       Value<String> uri,
       Value<String?> label,
+      Value<String?> thumbUrl,
       Value<DateTime> createdAt,
     });
 
@@ -8556,6 +8618,11 @@ class $$ExerciseMediaTableFilterComposer
 
   ColumnFilters<String> get label => $composableBuilder(
     column: $table.label,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get thumbUrl => $composableBuilder(
+    column: $table.thumbUrl,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -8640,6 +8707,11 @@ class $$ExerciseMediaTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get thumbUrl => $composableBuilder(
+    column: $table.thumbUrl,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<DateTime> get createdAt => $composableBuilder(
     column: $table.createdAt,
     builder: (column) => ColumnOrderings(column),
@@ -8712,6 +8784,9 @@ class $$ExerciseMediaTableAnnotationComposer
 
   GeneratedColumn<String> get label =>
       $composableBuilder(column: $table.label, builder: (column) => column);
+
+  GeneratedColumn<String> get thumbUrl =>
+      $composableBuilder(column: $table.thumbUrl, builder: (column) => column);
 
   GeneratedColumn<DateTime> get createdAt =>
       $composableBuilder(column: $table.createdAt, builder: (column) => column);
@@ -8797,6 +8872,7 @@ class $$ExerciseMediaTableTableManager
                 Value<MediaKind> kind = const Value.absent(),
                 Value<String> uri = const Value.absent(),
                 Value<String?> label = const Value.absent(),
+                Value<String?> thumbUrl = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
               }) => ExerciseMediaCompanion(
                 id: id,
@@ -8805,6 +8881,7 @@ class $$ExerciseMediaTableTableManager
                 kind: kind,
                 uri: uri,
                 label: label,
+                thumbUrl: thumbUrl,
                 createdAt: createdAt,
               ),
           createCompanionCallback:
@@ -8815,6 +8892,7 @@ class $$ExerciseMediaTableTableManager
                 required MediaKind kind,
                 required String uri,
                 Value<String?> label = const Value.absent(),
+                Value<String?> thumbUrl = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
               }) => ExerciseMediaCompanion.insert(
                 id: id,
@@ -8823,6 +8901,7 @@ class $$ExerciseMediaTableTableManager
                 kind: kind,
                 uri: uri,
                 label: label,
+                thumbUrl: thumbUrl,
                 createdAt: createdAt,
               ),
           withReferenceMapper: (p0) => p0

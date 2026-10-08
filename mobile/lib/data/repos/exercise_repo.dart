@@ -139,6 +139,7 @@ class ExerciseRepo {
     required int profileId,
     required String url,
     String? label,
+    String? thumbUrl,
   }) => _db
       .into(_db.exerciseMedia)
       .insert(
@@ -147,9 +148,33 @@ class ExerciseRepo {
           exerciseId: exerciseId,
           kind: MediaKind.link,
           uri: url.trim(),
-          label: Value(label?.trim().isEmpty ?? true ? null : label!.trim()),
+          label: Value(_blankToNull(label)),
+          thumbUrl: Value(thumbUrl),
         ),
       );
+
+  /// Renames a link (or a file); a blank label shows the link's address.
+  Future<void> setLabel(int mediaId, String? label) =>
+      (_db.update(_db.exerciseMedia)..where((m) => m.id.equals(mediaId))).write(
+        ExerciseMediaCompanion(label: Value(_blankToNull(label))),
+      );
+
+  /// Fills in what a link's page offers: its picture ('' for none), and its
+  /// title if the link has no label yet.
+  Future<void> setPreview(int mediaId, {String? title, String? thumbUrl}) =>
+      _db.transaction(() async {
+        final q = _db.update(_db.exerciseMedia)
+          ..where((m) => m.id.equals(mediaId));
+        await q.write(ExerciseMediaCompanion(thumbUrl: Value(thumbUrl ?? '')));
+        if (_blankToNull(title) case final t?) {
+          await (_db.update(_db.exerciseMedia)
+                ..where((m) => m.id.equals(mediaId) & m.label.isNull()))
+              .write(ExerciseMediaCompanion(label: Value(t)));
+        }
+      });
+
+  static String? _blankToNull(String? s) =>
+      s == null || s.trim().isEmpty ? null : s.trim();
 
   Future<void> deleteMedia(MediaItem item) async {
     await (_db.delete(

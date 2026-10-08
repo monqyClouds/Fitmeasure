@@ -10,7 +10,8 @@ import '../../data/db/database.dart';
 import '../../data/media_paths.dart';
 import '../../domain/enums.dart';
 
-/// Full-screen view of an image (pinch to zoom) or a video with controls.
+/// Full-screen view of an image (pinch to zoom) or a video with controls:
+/// the app's copy of a file, or a link straight to a video file.
 class MediaViewerScreen extends ConsumerWidget {
   const MediaViewerScreen({super.key, required this.item});
   final MediaItem item;
@@ -26,33 +27,34 @@ class MediaViewerScreen extends ConsumerWidget {
         foregroundColor: Colors.white,
         title: item.label == null ? null : Text(item.label!),
       ),
-      body: item.kind == MediaKind.video
-          ? _VideoView(path: path)
-          : Center(
-              child: InteractiveViewer(
-                maxScale: 5,
-                child: Hero(
-                  tag: 'media-${item.id}',
-                  child: Image.file(File(path)),
-                ),
-              ),
-            ),
+      body: switch (item.kind) {
+        MediaKind.video => _VideoView(
+          create: () => VideoPlayerController.file(File(path)),
+        ),
+        MediaKind.link => _VideoView(
+          create: () => VideoPlayerController.networkUrl(Uri.parse(item.uri)),
+        ),
+        MediaKind.image => Center(
+          child: InteractiveViewer(
+            maxScale: 5,
+            child: Hero(tag: 'media-${item.id}', child: Image.file(File(path))),
+          ),
+        ),
+      },
     );
   }
 }
 
 class _VideoView extends StatefulWidget {
-  const _VideoView({required this.path});
-  final String path;
+  const _VideoView({required this.create});
+  final VideoPlayerController Function() create;
 
   @override
   State<_VideoView> createState() => _VideoViewState();
 }
 
 class _VideoViewState extends State<_VideoView> {
-  late final VideoPlayerController _c = VideoPlayerController.file(
-    File(widget.path),
-  );
+  late final VideoPlayerController _c = widget.create();
   bool _showControls = true;
   Object? _error;
 

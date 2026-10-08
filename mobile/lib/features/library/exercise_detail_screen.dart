@@ -2,8 +2,8 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/providers.dart';
 import '../../app/theme.dart';
@@ -16,13 +16,57 @@ import '../progress/exercise_progress_screen.dart';
 import 'exercise_editor_screen.dart';
 import 'media_viewer_screen.dart';
 import 'muscle_icon.dart';
+import 'video_links.dart';
 
-class ExerciseDetailScreen extends ConsumerWidget {
+class ExerciseDetailScreen extends ConsumerStatefulWidget {
   const ExerciseDetailScreen({super.key, required this.exerciseId});
   final int exerciseId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ExerciseDetailScreen> createState() =>
+      _ExerciseDetailScreenState();
+}
+
+class _ExerciseDetailScreenState extends ConsumerState<ExerciseDetailScreen> {
+  late final AppLifecycleListener _lifecycle;
+
+  /// Set while the person is off searching YouTube: when they come back
+  /// with a link copied, it's offered straight away.
+  var _searching = false;
+
+  int get exerciseId => widget.exerciseId;
+
+  @override
+  void initState() {
+    super.initState();
+    _lifecycle = AppLifecycleListener(onResume: _backFromSearch);
+  }
+
+  @override
+  void dispose() {
+    _lifecycle.dispose();
+    super.dispose();
+  }
+
+  Future<void> _search(Exercise exercise) async {
+    _searching = true;
+    await searchFormVideos(exercise.name);
+  }
+
+  Future<void> _backFromSearch() async {
+    if (!_searching) return;
+    _searching = false;
+    final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
+    final url = text == null ? null : extractUrl(text);
+    final exercise = ref.read(exerciseProvider(exerciseId)).value;
+    if (url == null || exercise == null || !mounted) return;
+    final have = ref.read(exerciseMediaProvider(exerciseId)).value ?? const [];
+    if (have.any((m) => m.uri == url)) return;
+    await _addLink(context, ref, exercise, initialUrl: url);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final exercise = ref.watch(exerciseProvider(exerciseId)).value;
     if (exercise == null) {
       return const Scaffold(backgroundColor: AppColors.background);
@@ -128,6 +172,22 @@ class ExerciseDetailScreen extends ConsumerWidget {
                     ),
                   ),
                 ],
+                const SizedBox(height: 28),
+                FadeSlideIn(
+                  delay: const Duration(milliseconds: 70),
+                  child: const SectionHeader('How to do it'),
+                ),
+                FadeSlideIn(
+                  delay: const Duration(milliseconds: 90),
+                  child: FormVideoStrip(
+                    exerciseName: exercise.name,
+                    links: links,
+                    color: color,
+                    onAdd: () => _addLink(context, ref, exercise),
+                    onSearch: () => _search(exercise),
+                    onActions: (l) => showVideoLinkActions(context, ref, l),
+                  ),
+                ),
                 if (ref.watch(exerciseTrendProvider(exerciseId)).value
                     case final trend?) ...[
                   const SizedBox(height: 24),
@@ -139,7 +199,7 @@ class ExerciseDetailScreen extends ConsumerWidget {
                 const SizedBox(height: 28),
                 FadeSlideIn(
                   delay: const Duration(milliseconds: 100),
-                  child: const SectionHeader('Photos & videos'),
+                  child: const SectionHeader('Your photos & videos'),
                 ),
                 if (files.isEmpty)
                   FadeSlideIn(
@@ -175,22 +235,10 @@ class ExerciseDetailScreen extends ConsumerWidget {
                       ),
                     ),
                   ),
-                if (links.isNotEmpty) ...[
-                  const SizedBox(height: 28),
-                  const SectionHeader('Links'),
-                  for (final (i, l) in links.indexed)
-                    FadeSlideIn.staggered(
-                      index: i,
-                      child: _LinkTile(
-                        item: l,
-                        onDelete: () => _confirmDelete(context, ref, l),
-                      ),
-                    ),
-                ],
                 if (media.isNotEmpty) ...[
                   const SizedBox(height: 16),
                   Text(
-                    'Long-press an item to remove it',
+                    'Long-press an item for more options',
                     textAlign: TextAlign.center,
                     style: t.bodySmall!.copyWith(color: AppColors.textTertiary),
                   ),
@@ -226,9 +274,9 @@ class ExerciseDetailScreen extends ConsumerWidget {
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.link_rounded),
-                title: const Text('Web link'),
-                subtitle: const Text('YouTube, Instagram, any URL'),
+                leading: const Icon(Icons.smart_display_outlined),
+                title: const Text('Video link'),
+                subtitle: const Text('YouTube, Instagram, TikTok, any site'),
                 onTap: () {
                   Navigator.pop(sheet);
                   _addLink(context, ref, exercise);
@@ -278,21 +326,19 @@ class ExerciseDetailScreen extends ConsumerWidget {
   Future<void> _addLink(
     BuildContext context,
     WidgetRef ref,
-    Exercise exercise,
-  ) async {
-    final result = await showModalBottomSheet<(String, String)>(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => const _LinkForm(),
-    );
-    if (result == null) return;
+    Exercise exercise, {
+    String? initialUrl,
+  }) async {
+    final link = await showAddVideoSheet(context, initialUrl: initialUrl);
+    if (link == null) return;
     await ref
         .read(exerciseRepoProvider)
         .addLink(
           exerciseId: exercise.id,
           profileId: ref.read(currentProfileIdProvider)!,
-          url: result.$1,
-          label: result.$2,
+          url: link.url,
+          label: link.title,
+          thumbUrl: link.thumbUrl,
         );
   }
 
@@ -432,150 +478,6 @@ class _MediaThumb extends ConsumerWidget {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
         child: ColoredBox(color: AppColors.surface, child: content),
-      ),
-    );
-  }
-}
-
-class _LinkTile extends StatelessWidget {
-  const _LinkTile({required this.item, required this.onDelete});
-  final MediaItem item;
-  final VoidCallback onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = Theme.of(context).textTheme;
-    final uri = Uri.tryParse(item.uri);
-    final host = uri?.host.replaceFirst('www.', '') ?? item.uri;
-    final isVideo = host.contains('youtu') || host.contains('vimeo');
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Pressable(
-        borderRadius: Radii.tile,
-        onTap: uri == null
-            ? null
-            : () => launchUrl(uri, mode: LaunchMode.externalApplication),
-        onLongPress: onDelete,
-        child: Ink(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(Radii.tile),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceHigh,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(
-                  isVideo ? Icons.smart_display_outlined : Icons.link_rounded,
-                  color: AppColors.textSecondary,
-                  size: 20,
-                ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      item.label ?? host,
-                      style: t.titleSmall,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      item.uri,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: t.bodySmall!.copyWith(
-                        color: AppColors.textTertiary,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Icon(
-                Icons.open_in_new_rounded,
-                size: 18,
-                color: AppColors.textTertiary,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _LinkForm extends StatefulWidget {
-  const _LinkForm();
-
-  @override
-  State<_LinkForm> createState() => _LinkFormState();
-}
-
-class _LinkFormState extends State<_LinkForm> {
-  final _url = TextEditingController();
-  final _label = TextEditingController();
-
-  @override
-  void dispose() {
-    _url.dispose();
-    _label.dispose();
-    super.dispose();
-  }
-
-  String? get _normalized {
-    var u = _url.text.trim();
-    if (u.isEmpty) return null;
-    if (!u.contains('://')) u = 'https://$u';
-    final parsed = Uri.tryParse(u);
-    return parsed != null && parsed.host.isNotEmpty ? u : null;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final valid = _normalized != null;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(
-        24,
-        0,
-        24,
-        24 + MediaQuery.viewInsetsOf(context).bottom,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('Add link', style: Theme.of(context).textTheme.headlineSmall),
-          const SizedBox(height: 20),
-          TextField(
-            controller: _url,
-            autofocus: true,
-            keyboardType: TextInputType.url,
-            decoration: const InputDecoration(hintText: 'https://…'),
-            onChanged: (_) => setState(() {}),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _label,
-            textCapitalization: TextCapitalization.sentences,
-            decoration: const InputDecoration(hintText: 'Label (optional)'),
-          ),
-          const SizedBox(height: 24),
-          FilledButton(
-            onPressed: valid
-                ? () => Navigator.pop(context, (_normalized!, _label.text))
-                : null,
-            child: const Text('Add'),
-          ),
-        ],
       ),
     );
   }

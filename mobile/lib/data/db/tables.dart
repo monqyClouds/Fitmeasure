@@ -54,6 +54,11 @@ class ExerciseMedia extends Table {
   /// Absolute path inside the app's storage for images/videos, or a URL.
   TextColumn get uri => text()();
   TextColumn get label => text().nullable()();
+
+  /// For a link: the picture its page offers for previews, '' if it has
+  /// none, or null if not looked up yet. YouTube's is worked out from the
+  /// video ID instead.
+  TextColumn get thumbUrl => text().nullable()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
 }
 

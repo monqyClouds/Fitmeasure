@@ -51,6 +51,7 @@ dependencies:
   package_info_plus: ^10.2.1
   flutter_webrtc: ^1.6.2+hotfix.4
   web_socket_channel: ^3.0.3
+  youtube_player_iframe: ^6.0.2
 
 dev_dependencies:
   flutter_test:

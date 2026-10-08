@@ -434,6 +434,9 @@ void main() {
     await ProfileRepo(old).create(name: 'Kept', color: 1);
     await old.customStatement('DROP TABLE session_exercises');
     await old.customStatement('ALTER TABLE sessions DROP COLUMN started');
+    await old.customStatement(
+      'ALTER TABLE exercise_media DROP COLUMN thumb_url',
+    );
     await old.customStatement('PRAGMA user_version = 1');
     await old.close();
 
@@ -458,6 +461,9 @@ void main() {
     var old = AppDatabase(NativeDatabase(file));
     final p = await ProfileRepo(old).create(name: 'Ada', color: 1);
     await old.customStatement('ALTER TABLE sessions DROP COLUMN started');
+    await old.customStatement(
+      'ALTER TABLE exercise_media DROP COLUMN thumb_url',
+    );
     await old.customStatement(
       'INSERT INTO sessions (profile_id, name, started_at) VALUES (?, ?, ?)',
       [p, 'Old', 1759000000],
@@ -516,6 +522,9 @@ void main() {
       );
     }
     await old.customStatement('ALTER TABLE sessions DROP COLUMN started');
+    await old.customStatement(
+      'ALTER TABLE exercise_media DROP COLUMN thumb_url',
+    );
     await old.customStatement('PRAGMA user_version = 2');
     await old.close();
 
