@@ -4,13 +4,23 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import '../../app/theme.dart';
 import '../../widgets/common.dart';
 import 'room_client.dart';
+import 'rooms_api.dart';
+import 'share_room.dart';
 import 'session_screen.dart';
 
 /// Camera preview, mic and camera toggles and your name, before joining.
 class PreJoinScreen extends StatefulWidget {
-  const PreJoinScreen({super.key, required this.room, required this.name});
-  final String room;
+  const PreJoinScreen({
+    super.key,
+    required this.room,
+    required this.name,
+    this.justCreated = false,
+  });
+  final LiveRoom room;
   final String name;
+
+  /// Shows the room's ID and an invitation to share it.
+  final bool justCreated;
 
   @override
   State<PreJoinScreen> createState() => _PreJoinScreenState();
@@ -107,7 +117,9 @@ class _PreJoinScreenState extends State<PreJoinScreen> {
     _handedOver = true;
     _preview.srcObject = null;
     final client = RoomClient(
-      room: widget.room,
+      roomId: widget.room.id,
+      roomName: widget.room.name,
+      hostKey: widget.room.hostKey,
       name: name,
       localStream: stream,
     );
@@ -121,11 +133,35 @@ class _PreJoinScreenState extends State<PreJoinScreen> {
     final t = Theme.of(context).textTheme;
     final accent = Theme.of(context).colorScheme.primary;
     return Scaffold(
-      appBar: AppBar(title: Text('Join "${widget.room}"')),
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.room.name, overflow: TextOverflow.ellipsis),
+            Text(
+              widget.room.created
+                  ? 'Room ${widget.room.displayId.toUpperCase()} · you host it'
+                  : 'Room ${widget.room.displayId.toUpperCase()}',
+              style: t.bodySmall!.copyWith(color: AppColors.textSecondary),
+            ),
+          ],
+        ),
+        actions: [
+          IconButton(
+            tooltip: 'Share room',
+            icon: const Icon(Icons.ios_share_rounded),
+            onPressed: () => shareRoom(context, widget.room),
+          ),
+        ],
+      ),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
           children: [
+            if (widget.justCreated) ...[
+              _CreatedCard(room: widget.room),
+              const SizedBox(height: 16),
+            ],
             AspectRatio(
               aspectRatio: 3 / 4,
               child: ClipRRect(
@@ -252,6 +288,54 @@ class _PreJoinScreenState extends State<PreJoinScreen> {
 }
 
 /// A round mic or camera button: filled when on, red when off.
+/// "Room ready": its ID, and a button to invite people.
+class _CreatedCard extends StatelessWidget {
+  const _CreatedCard({required this.room});
+  final LiveRoom room;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final accent = Theme.of(context).colorScheme.primary;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(Radii.card),
+        gradient: LinearGradient(
+          colors: [accent.withValues(alpha: 0.22), AppColors.surface],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: Row(
+        children: [
+          RoomIdChip(room: room),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Room ready', style: t.titleMedium),
+                const SizedBox(height: 2),
+                Text(
+                  'Share it so others can join.',
+                  style: t.bodySmall!.copyWith(color: AppColors.textSecondary),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: () => shareRoom(context, room),
+                  icon: const Icon(Icons.ios_share_rounded, size: 18),
+                  label: const Text('Invite'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class RoundToggle extends StatelessWidget {
   const RoundToggle({
     super.key,

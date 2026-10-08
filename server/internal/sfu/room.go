@@ -80,6 +80,11 @@ type Rooms struct {
 	// Wi-Fi to 4G loses its connections. 0 means DefaultResumeGrace.
 	ResumeGrace time.Duration
 
+	// Directory, when set, holds the rooms people have created: only those
+	// can be joined, by ID, and each has a name to show. Without it, any
+	// room name can be joined (as in the tests and the early stages).
+	Directory RoomDirectory
+
 	// testBudget, in tests, replaces the estimate for a participant (by
 	// name), in bit/s.
 	testBudget func(name string) func() int
@@ -87,6 +92,31 @@ type Rooms struct {
 	mu     sync.Mutex // guards rooms, tokens and every room's membership; taken before room.mu
 	rooms  map[string]*room
 	tokens map[string]*participant // resume tokens
+}
+
+// RoomDirectory is what Rooms needs from the directory of created rooms.
+type RoomDirectory interface {
+	// Name is the room's name, if a room with the ID exists.
+	Name(id string) (string, bool)
+	// IsHostKey reports whether key makes its holder the room's host.
+	IsHostKey(id, key string) bool
+	// Touch records that the room is in use.
+	Touch(id string)
+}
+
+var errNoSuchRoom = errors.New("no room with that ID")
+
+// People is how many are in the room with the ID now.
+func (rs *Rooms) People(id string) int {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rm := rs.rooms[id]
+	if rm == nil {
+		return 0
+	}
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	return len(rm.participants)
 }
 
 // DefaultResumeGrace is long enough for a phone to change networks.
@@ -162,6 +192,20 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	conn := signal.NewConn(ws)
 
+	// The room's name, and whether p is its creator.
+	title, claimHost := roomName, false
+	if rs.Directory != nil {
+		var ok bool
+		if title, ok = rs.Directory.Name(roomName); !ok {
+			_ = conn.Send(signal.Message{Type: signal.TypeError, Error: errNoSuchRoom.Error()})
+			conn.Close()
+			return
+		}
+		claimHost = rs.Directory.IsHostKey(roomName, r.URL.Query().Get("key"))
+		rs.Directory.Touch(roomName)
+		defer rs.Directory.Touch(roomName)
+	}
+
 	id := newID()
 	log := rs.Log.With("room", roomName, "participant", id, "name", name, "remote", r.RemoteAddr)
 	subAPI := rs.API
@@ -181,7 +225,7 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { p.getConn().Close() }()
 
-	rm, others, tracks, err := rs.join(roomName, p)
+	rm, others, tracks, demoted, err := rs.join(roomName, title, p, claimHost)
 	if err != nil {
 		p.close()
 		_ = conn.Send(signal.Message{Type: signal.TypeError, Error: err.Error()})
@@ -225,7 +269,7 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 
-	welcome := signal.Message{Type: signal.TypeWelcome, ID: p.id, Participants: others, Resume: p.token}
+	welcome := signal.Message{Type: signal.TypeWelcome, ID: p.id, Participants: others, Resume: p.token, RoomName: rm.title}
 	settings := rm.settings()
 	welcome.Locked, welcome.EveryoneCanModerate = settings.Locked, settings.EveryoneCanModerate
 	welcome.ICEServers = rs.clientICEServers(p, log)
@@ -233,6 +277,12 @@ func (rs *Rooms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	welcome.Participant = &self // you, with your role
 	_ = p.send(welcome)
 	broadcast(rm.others(p), signal.Message{Type: signal.TypeParticipantJoined, Participant: &self})
+	if demoted != nil {
+		// The room's creator is back and takes over from whoever was
+		// standing in as host.
+		rm.announce(demoted)
+		rm.retargetAll()
+	}
 	for _, t := range tracks {
 		p.subscribe(t)
 	}
@@ -273,17 +323,19 @@ func (rs *Rooms) clientICEServers(p *participant, log *slog.Logger) []webrtc.ICE
 	return servers
 }
 
-// join adds p to the named room, creating it if needed. It returns the people
-// already there and the tracks they publish.
-func (rs *Rooms) join(roomName string, p *participant) (*room, []signal.Participant, []*upTrack, error) {
+// join adds p to the room with the ID, creating it (called title) if
+// needed. It returns the people already there and the tracks they publish.
+// With claimHost, p becomes the host, and whoever was host is demoted to
+// moderator and returned.
+func (rs *Rooms) join(roomName, title string, p *participant, claimHost bool) (rm *room, others []signal.Participant, tracks []*upTrack, demoted *participant, err error) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	if rs.rooms == nil {
 		rs.rooms = make(map[string]*room)
 	}
-	rm := rs.rooms[roomName]
+	rm = rs.rooms[roomName]
 	if rm == nil {
-		rm = &room{name: roomName, done: make(chan struct{}), participants: make(map[string]*participant), tracks: make(map[*upTrack]bool)}
+		rm = &room{name: roomName, title: title, done: make(chan struct{}), participants: make(map[string]*participant), tracks: make(map[*upTrack]bool)}
 		rs.rooms[roomName] = rm
 		go rm.watchSpeakers()
 	}
@@ -296,22 +348,28 @@ func (rs *Rooms) join(roomName string, p *participant) (*room, []signal.Particip
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	if len(rm.participants) >= max {
-		return nil, nil, nil, errRoomFull
+		return nil, nil, nil, nil, errRoomFull
 	}
-	if rm.locked {
-		return nil, nil, nil, errRoomLocked
+	// The room's creator can always get into their own room.
+	if rm.locked && !claimHost {
+		return nil, nil, nil, nil, errRoomLocked
 	}
-	// Provisional, until there are accounts: whoever opens the room hosts it.
+	// Until there are accounts, the creator is recognised by the room's
+	// host key; without them, whoever opens the room hosts it.
 	p.joinedAt = time.Now()
-	if len(rm.participants) == 0 {
+	if len(rm.participants) == 0 || claimHost {
+		if old := rm.host; old != nil && old != p {
+			old.setRole(signal.RoleModerator)
+			demoted = old
+		}
 		rm.host = p
 		p.setRole(signal.RoleHost)
 	}
-	others := make([]signal.Participant, 0, len(rm.participants))
+	others = make([]signal.Participant, 0, len(rm.participants))
 	for _, q := range rm.inJoinOrder() {
 		others = append(others, q.info())
 	}
-	tracks := make([]*upTrack, 0, len(rm.tracks))
+	tracks = make([]*upTrack, 0, len(rm.tracks))
 	for t := range rm.tracks {
 		tracks = append(tracks, t)
 	}
@@ -320,7 +378,7 @@ func (rs *Rooms) join(roomName string, p *participant) (*room, []signal.Particip
 		rs.tokens = make(map[string]*participant)
 	}
 	rs.tokens[p.token] = p
-	return rm, others, tracks, nil
+	return rm, others, tracks, demoted, nil
 }
 
 // leave closes p's connections, stops forwarding its tracks to everyone else
@@ -362,8 +420,9 @@ func (rs *Rooms) leave(rm *room, p *participant) {
 
 // room is one group of people who all see each other.
 type room struct {
-	name string
-	done chan struct{} // closed when the last person leaves
+	name  string        // its ID, in the URL
+	title string        // what people call it
+	done  chan struct{} // closed when the last person leaves
 
 	mu                  sync.Mutex
 	participants        map[string]*participant

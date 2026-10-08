@@ -155,6 +155,7 @@ class SignalMessage {
     this.camera,
     this.speakers = const [],
     this.resume,
+    this.roomName,
     this.track,
     this.role,
     this.visibility,
@@ -174,6 +175,7 @@ class SignalMessage {
       },
       error: json['error'] as String?,
       resume: json['resume'] as String?,
+      roomName: json['roomName'] as String?,
       track: json['track'] as String?,
       role: json['role'] as String?,
       locked: json['locked'] as bool?,
@@ -224,6 +226,9 @@ class SignalMessage {
 
   /// In a welcome or resumed: the secret token for reconnecting.
   final String? resume;
+
+  /// In a welcome: the room's name (we join by its ID).
+  final String? roomName;
 
   /// In moderation messages: "mic" or "camera".
   final String? track;

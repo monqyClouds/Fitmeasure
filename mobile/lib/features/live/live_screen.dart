@@ -1,17 +1,21 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../widgets/common.dart';
 import '../../widgets/motion.dart';
 import '../../widgets/visuals.dart';
-import 'prejoin_screen.dart';
+import 'join_room.dart';
 import 'room_client.dart';
+import 'rooms_api.dart';
+import 'saved_rooms.dart';
+import 'share_room.dart';
 
-/// Live tab: pick a room and train together over video.
+/// Live tab: join a room by its ID or link, or create one, and train
+/// together over video.
 class LiveScreen extends ConsumerStatefulWidget {
   const LiveScreen({super.key});
 
@@ -20,40 +24,42 @@ class LiveScreen extends ConsumerStatefulWidget {
 }
 
 class _LiveScreenState extends ConsumerState<LiveScreen> {
-  final _room = TextEditingController(text: 'gym');
+  final _code = TextEditingController();
   late Future<bool> _online = liveServerOnline();
+  var _finding = false;
 
   @override
   void dispose() {
-    _room.dispose();
+    _code.dispose();
     super.dispose();
   }
 
-  /// Room names on the server are lowercase letters, digits and dashes.
-  String get _roomName => _room.text
-      .trim()
-      .toLowerCase()
-      .replaceAll(RegExp(r'\s+'), '-')
-      .replaceAll(RegExp(r'[^a-z0-9-]'), '');
+  String? get _id => normalizeRoomId(_code.text);
 
-  void _join() {
-    final room = _roomName;
-    if (room.isEmpty) return;
-    final profile = ref.read(currentProfileProvider).value;
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => PreJoinScreen(room: room, name: profile?.name ?? ''),
-      ),
-    );
+  Future<void> _join() async {
+    final id = _id;
+    if (id == null || _finding) return;
+    setState(() => _finding = true);
+    await openRoomById(context, ref, id);
+    if (mounted) setState(() => _finding = false);
+  }
+
+  Future<void> _paste() async {
+    final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
+    if (text == null) return;
+    _code.text = normalizeRoomId(text) ?? text.trim();
+    setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
     final accent = Theme.of(context).colorScheme.primary;
+    final rooms = ref.watch(savedRoomsListProvider).value ?? const [];
     var step = 0;
     Widget stagger(Widget child) =>
         FadeSlideIn.staggered(index: step++, child: child);
+    final typed = _code.text.trim();
 
     return Scaffold(
       body: GlowBackdrop(
@@ -95,7 +101,7 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
                           top: Radius.circular(Radii.card),
                         ),
                         child: SizedBox(
-                          height: 170,
+                          height: 150,
                           child: _GridIllustration(accent: accent),
                         ),
                       ),
@@ -105,33 +111,62 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             TextField(
-                              controller: _room,
+                              controller: _code,
                               textInputAction: TextInputAction.go,
+                              autocorrect: false,
+                              textCapitalization: TextCapitalization.characters,
                               onSubmitted: (_) => _join(),
                               onChanged: (_) => setState(() {}),
-                              decoration: const InputDecoration(
-                                labelText: 'Room',
-                                prefixIcon: Icon(Icons.meeting_room_outlined),
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 4,
-                              ),
-                              child: Text(
-                                'Everyone who joins "${_roomName.isEmpty ? '…' : _roomName}" '
-                                'sees each other.',
-                                style: t.bodySmall!.copyWith(
-                                  color: AppColors.textTertiary,
+                              decoration: InputDecoration(
+                                labelText: 'Room ID or link',
+                                hintText: 'K7F 3QZ',
+                                prefixIcon: const Icon(Icons.tag_rounded),
+                                errorText: typed.length >= 6 && _id == null
+                                    ? 'Room IDs have six letters and digits'
+                                    : null,
+                                suffixIcon: IconButton(
+                                  tooltip: 'Paste',
+                                  icon: const Icon(Icons.content_paste_rounded),
+                                  onPressed: _paste,
                                 ),
                               ),
                             ),
-                            const SizedBox(height: 16),
+                            const SizedBox(height: 14),
                             FilledButton.icon(
-                              onPressed: _roomName.isEmpty ? null : _join,
-                              icon: const Icon(Icons.videocam_rounded),
+                              onPressed: _id == null || _finding ? null : _join,
+                              icon: _finding
+                                  ? const SizedBox.square(
+                                      dimension: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.videocam_rounded),
                               label: const Text('Join room'),
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                const Expanded(child: Divider()),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                  ),
+                                  child: Text(
+                                    'or',
+                                    style: t.bodySmall!.copyWith(
+                                      color: AppColors.textTertiary,
+                                    ),
+                                  ),
+                                ),
+                                const Expanded(child: Divider()),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            OutlinedButton.icon(
+                              onPressed: () => createRoomFlow(context, ref),
+                              icon: const Icon(Icons.add_rounded),
+                              label: const Text('Create a room'),
                             ),
                           ],
                         ),
@@ -140,6 +175,36 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
                   ),
                 ),
               ),
+              if (rooms.isNotEmpty) ...[
+                const SizedBox(height: 26),
+                stagger(const SectionHeader('Your rooms')),
+                for (final r in rooms)
+                  stagger(
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: _SavedRoomTile(
+                        room: r,
+                        onJoin: () => openRoomById(context, ref, r.id),
+                        onShare: () => shareRoom(context, r),
+                        onForget: () async {
+                          final ok = await confirmDialog(
+                            context,
+                            title: 'Remove ${r.name}?',
+                            message: r.created
+                                ? 'It leaves your list, and you won\'t host '
+                                      'it any more if you join it again.'
+                                : 'It leaves your list. You can join again '
+                                      'with its ID.',
+                            confirmLabel: 'Remove',
+                          );
+                          if (ok) {
+                            await ref.read(savedRoomsProvider).forget(r.id);
+                          }
+                        },
+                      ),
+                    ),
+                  ),
+              ],
               const SizedBox(height: 26),
               stagger(const SectionHeader('How it works')),
               stagger(
@@ -149,10 +214,10 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
                     children: [
                       Expanded(
                         child: _Step(
-                          icon: Icons.tag_rounded,
+                          icon: Icons.ios_share_rounded,
                           color: Color(0xFFA99BFF),
-                          title: 'Pick a room',
-                          text: 'Share its name with your training partners',
+                          title: 'Share the link',
+                          text: 'Or read out the room ID to your partners',
                         ),
                       ),
                       SizedBox(width: 10),
@@ -179,6 +244,94 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A room this phone created or joined: tap to join again.
+class _SavedRoomTile extends StatelessWidget {
+  const _SavedRoomTile({
+    required this.room,
+    required this.onJoin,
+    required this.onShare,
+    required this.onForget,
+  });
+
+  final LiveRoom room;
+  final VoidCallback onJoin;
+  final VoidCallback onShare;
+  final VoidCallback onForget;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final colors = AppColors.profileColors;
+    final color = colors[room.id.hashCode.abs() % colors.length];
+    return Pressable(
+      borderRadius: Radii.tile,
+      onTap: onJoin,
+      onLongPress: onForget,
+      child: Ink(
+        padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(Radii.tile),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(Radii.chip),
+              ),
+              child: Icon(
+                room.created ? Icons.star_rounded : Icons.groups_rounded,
+                color: color,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    room.name,
+                    style: t.titleSmall,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    [
+                      room.displayId.toUpperCase(),
+                      if (room.created) 'You host',
+                    ].join('  ·  '),
+                    style: t.bodySmall!.copyWith(
+                      color: AppColors.textTertiary,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: 'Share',
+              onPressed: onShare,
+              icon: const Icon(
+                Icons.ios_share_rounded,
+                size: 20,
+                color: AppColors.textSecondary,
+              ),
+            ),
+            const Icon(
+              Icons.chevron_right_rounded,
+              color: AppColors.textTertiary,
+            ),
+          ],
         ),
       ),
     );

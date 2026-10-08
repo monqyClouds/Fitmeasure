@@ -5,7 +5,7 @@ void main() {
   group('SignalMessage', () {
     test('decodes a welcome with others and ICE servers', () {
       final m = SignalMessage.decode('''{
-        "type": "welcome", "id": "abc",
+        "type": "welcome", "id": "abc", "roomName": "Tuesday HIIT",
         "participants": [{"id": "p1", "name": "Ada"}],
         "iceServers": [
           {"urls": ["stun:1.2.3.4:3478"]},
@@ -17,6 +17,7 @@ void main() {
       expect(m.participants.single.name, 'Ada');
       expect(m.iceServers, hasLength(2));
       expect(m.iceServers[1]['credential'], 'pw');
+      expect(m.roomName, 'Tuesday HIIT');
     });
 
     test('decodes a welcome to an empty room', () {

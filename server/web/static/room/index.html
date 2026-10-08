@@ -3,22 +3,36 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Small room · Fitmeasure SFU</title>
+  <title>Live room · Fitmeasure</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <header>
-    <nav><a href="/echo/">1. Echo</a><a href="/room/" aria-current="page">2. Small room</a></nav>
-    <h1>Small room</h1>
-    <p>Up to 16 people, everyone sees everyone. Open this page on other
-      devices, on any network, and join the same room. "Relay only" forces
-      the connection through the TURN server.</p>
+    <nav><a href="/echo/">1. Echo</a><a href="/room/" aria-current="page">2. Rooms</a></nav>
+    <h1 id="title">Live room</h1>
+    <p id="subtitle">Up to 16 people train together over video. Create a room
+      and share its link, or join one with its ID.</p>
+    <div id="share" class="controls" hidden>
+      <span class="room-id">Room ID <strong id="room-id"></strong></span>
+      <button id="copy-link" type="button" class="toggle">Copy link</button>
+      <a id="open-app" class="button-link" hidden>Open in the app</a>
+    </div>
   </header>
 
   <main>
-    <form id="join" class="controls">
+    <div id="lobby" hidden>
+      <form id="create" class="controls">
+        <label>New room <input id="new-name" maxlength="60" placeholder="Tuesday HIIT" required></label>
+        <button type="submit">Create room</button>
+      </form>
+      <form id="find" class="controls">
+        <label>Room ID or link <input id="find-id" placeholder="k7f3qz" required></label>
+        <button type="submit" class="toggle">Go to room</button>
+      </form>
+    </div>
+
+    <form id="join" class="controls" hidden>
       <label>Name <input id="name" autocomplete="nickname" maxlength="40" required></label>
-      <label>Room <input id="room" pattern="[a-z0-9\-]{1,40}" maxlength="40" required></label>
       <label><input type="checkbox" id="audio" checked> Microphone</label>
       <label title="Send everything through the TURN server, to test it"><input type="checkbox" id="relay"> Relay only</label>
       <button id="start" type="submit">Join</button>
@@ -52,6 +66,6 @@
     </section>
   </main>
 
-  <script src="room.js"></script>
+  <script src="/room/room.js"></script>
 </body>
 </html>

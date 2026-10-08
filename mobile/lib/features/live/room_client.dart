@@ -8,6 +8,7 @@ import 'package:web_socket_channel/status.dart' as ws_status;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'live_protocol.dart';
+import 'rooms_api.dart';
 
 /// "the host", "a moderator", "a participant".
 String roleName(String role) => switch (role) {
@@ -156,12 +157,23 @@ class LinkInfo {
 /// connections, as described in live_protocol.dart.
 class RoomClient extends ChangeNotifier {
   RoomClient({
-    required this.room,
+    required this.roomId,
+    required this.roomName,
     required this.name,
     required this.localStream,
+    this.hostKey,
   });
 
-  final String room;
+  /// The room's ID, which we join by, and its name, which the server
+  /// confirms in the welcome.
+  final String roomId;
+  String roomName;
+
+  /// The room's host key, if we created it: joining with it makes us host.
+  final String? hostKey;
+
+  /// The room, for sharing.
+  LiveRoom get room => LiveRoom(id: roomId, name: roomName, hostKey: hostKey);
   final String name;
 
   /// Our camera and mic, opened by the pre-join screen. The client owns it
@@ -249,13 +261,13 @@ class RoomClient extends ChangeNotifier {
 
   Uri _roomUri(Map<String, String> query) => liveServer.replace(
     scheme: liveServer.scheme == 'https' ? 'wss' : 'ws',
-    path: '/ws/rooms/$room',
+    path: '/ws/rooms/$roomId',
     queryParameters: query,
   );
 
   Future<void> join() async {
     try {
-      await _open(_roomUri({'name': name}));
+      await _open(_roomUri({'name': name, 'key': ?hostKey}));
     } catch (_) {
       await _end("Couldn't reach the server");
     }
@@ -354,6 +366,7 @@ class RoomClient extends ChangeNotifier {
     switch (msg.type) {
       case SignalType.welcome:
         myId = msg.id;
+        roomName = msg.roomName ?? roomName;
         _resumeToken = msg.resume;
         myRole = msg.participant?.role ?? Role.participant;
         _applySettings(msg);
@@ -492,6 +505,9 @@ class RoomClient extends ChangeNotifier {
 
   String _describeError(String? error) => switch (error) {
     'room is full' => 'This room is full (16 people)',
+    'room is locked' => 'The host has locked this room',
+    'no room with that ID' =>
+      'This room no longer exists. Rooms are removed after 30 days unused.',
     final e? => 'The server said: $e',
     null => 'The server refused to let you in',
   };

@@ -11,6 +11,7 @@ import 'live_session_service.dart';
 import 'people_sheet.dart';
 import 'prejoin_screen.dart';
 import 'room_client.dart';
+import 'share_room.dart';
 import 'tile_order.dart';
 
 /// In a room: everyone else in a grid, yourself in a small floating tile,
@@ -61,7 +62,7 @@ class _SessionScreenState extends State<SessionScreen> {
     // Keeps camera and mic going if the phone is locked or the app is put
     // in the background, with a notification that can end the session.
     LiveSessionService.start(
-      room: _client.room,
+      room: _client.roomName,
       onLeave: () {
         if (mounted && !_closing) _leave();
       },
@@ -207,7 +208,7 @@ class _SessionScreenState extends State<SessionScreen> {
                       Positioned.fill(
                         child: others.isEmpty
                             ? _Alone(
-                                room: _client.room,
+                                client: _client,
                                 connecting:
                                     _client.state == RoomState.connecting,
                               )
@@ -290,13 +291,23 @@ class _TopBar extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(client.room, style: t.titleMedium),
+                Text(
+                  client.roomName,
+                  style: t.titleMedium,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
                 Text(
                   '$count ${count == 1 ? 'person' : 'people'} here',
                   style: t.bodySmall!.copyWith(color: AppColors.textSecondary),
                 ),
               ],
             ),
+          ),
+          IconButton(
+            tooltip: 'Share room',
+            icon: const Icon(Icons.ios_share_rounded, size: 20),
+            onPressed: () => shareRoom(context, client.room),
           ),
           InkWell(
             borderRadius: BorderRadius.circular(Radii.chip),
@@ -723,10 +734,10 @@ class _Placeholder extends StatelessWidget {
   }
 }
 
-/// The empty room: an invitation to share its name.
+/// The empty room: an invitation to share its link.
 class _Alone extends StatelessWidget {
-  const _Alone({required this.room, required this.connecting});
-  final String room;
+  const _Alone({required this.client, required this.connecting});
+  final RoomClient client;
   final bool connecting;
 
   @override
@@ -766,10 +777,20 @@ class _Alone extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'Ask your training partners to join the room "$room".',
+              'Share the link, or the room ID, with your training partners.',
               style: t.bodyMedium!.copyWith(color: AppColors.textSecondary),
               textAlign: TextAlign.center,
             ),
+            if (!connecting) ...[
+              const SizedBox(height: 18),
+              RoomIdChip(room: client.room),
+              const SizedBox(height: 14),
+              FilledButton.icon(
+                onPressed: () => shareRoom(context, client.room),
+                icon: const Icon(Icons.ios_share_rounded),
+                label: const Text('Share room'),
+              ),
+            ],
           ],
         ),
       ),

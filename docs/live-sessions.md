@@ -71,6 +71,12 @@ Not in scope for now:
 Who can admit people: the host and moderators, or everyone when "everyone can
 moderate" is on.
 
+**Built so far, before accounts:** a room is created with a name and gets a
+short unique ID (`k7f3qz`) and a link (`live.somto.si/r/k7f3qz`). The ID or
+link is all anyone needs to join; the server supplies the name. There's no
+waiting room yet. The creator holds the room's host key, which makes them its
+host whenever they join (see `server/README.md`, "Rooms").
+
 ### 3.2 Removing
 
 - Anyone with moderation rights can remove a participant, but **never the

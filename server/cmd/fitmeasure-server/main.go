@@ -1,8 +1,9 @@
 // Command fitmeasure-server runs the Fitmeasure live sessions backend.
 //
-// For now it serves the SFU's test stages: small rooms at /room/ (WebSocket
-// /ws/rooms/{room}) and the echo at /echo/ (WebSocket /ws/echo), plus an
-// optional TURN server for clients that can't reach it directly.
+// It serves rooms people create (POST /api/rooms), joined by ID over the
+// WebSocket /ws/rooms/{id} and shared as links /r/{id}; the SFU's test
+// pages at /room/ and /echo/; and an optional TURN server for clients that
+// can't reach it directly.
 package main
 
 import (
@@ -25,6 +26,7 @@ import (
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 
+	"github.com/monqyClouds/Fitmeasure/server/internal/directory"
 	"github.com/monqyClouds/Fitmeasure/server/internal/relay"
 	"github.com/monqyClouds/Fitmeasure/server/internal/rtc"
 	"github.com/monqyClouds/Fitmeasure/server/internal/sfu"
@@ -47,6 +49,8 @@ type config struct {
 	certDir    string
 	acmeEmail  string
 	bwe        bool
+	roomsFile  string
+	androidApp string
 }
 
 func main() {
@@ -71,6 +75,8 @@ func main() {
 	flag.StringVar(&c.certDir, "cert-dir", envString("FITMEASURE_CERT_DIR", "certs"), "where Let's Encrypt certificates are kept, with -domain (env FITMEASURE_CERT_DIR)")
 	flag.StringVar(&c.acmeEmail, "acme-email", envString("FITMEASURE_ACME_EMAIL", ""), "email Let's Encrypt may contact about certificates (env FITMEASURE_ACME_EMAIL)")
 	flag.BoolVar(&c.bwe, "bwe", envString("FITMEASURE_BWE", "on") != "off", "fit each viewer's layers to an estimate of their bandwidth; FITMEASURE_BWE=off chooses by tile size only (env FITMEASURE_BWE)")
+	flag.StringVar(&c.roomsFile, "rooms-file", envString("FITMEASURE_ROOMS_FILE", "rooms.json"), "where created rooms are saved, so their links survive restarts; empty keeps them in memory only (env FITMEASURE_ROOMS_FILE)")
+	flag.StringVar(&c.androidApp, "android-app", envString("FITMEASURE_ANDROID_APP", ""), "package:sha256 of the Android app (fingerprints comma-separated) that may open room links, published at /.well-known/assetlinks.json (env FITMEASURE_ANDROID_APP)")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -164,7 +170,18 @@ func run(log *slog.Logger, c config) error {
 		log.Info("TURN listening", "port", c.turnPort, "relay_ports", c.relayPorts, "tls_host", c.turnDomain)
 	}
 
-	rooms := &sfu.Rooms{API: api, ICEServers: rtcCfg.ICEServers, Log: log}
+	dir, err := directory.Open(c.roomsFile, directory.Options{})
+	if err != nil {
+		return err
+	}
+	go dir.SaveEvery(time.Minute, ctx.Done(), func(err error) { log.Error("rooms: save", "err", err) })
+	defer func() {
+		if err := dir.Save(); err != nil {
+			log.Error("rooms: save", "err", err)
+		}
+	}()
+
+	rooms := &sfu.Rooms{API: api, ICEServers: rtcCfg.ICEServers, Log: log, Directory: dir}
 	if c.bwe {
 		rooms.SubscriberAPI = factory.EstimatingAPI
 	}
@@ -175,7 +192,17 @@ func run(log *slog.Logger, c config) error {
 	routes := http.NewServeMux()
 	routes.Handle("GET /ws/echo", &sfu.Echo{API: api, ICEServers: rtcCfg.ICEServers, Log: log})
 	routes.Handle("GET /ws/rooms/{room}", rooms)
-	routes.Handle("GET /", web.Handler())
+	(&directory.API{Dir: dir, People: rooms.People, Log: log}).Register(routes)
+	site := web.Handler()
+	routes.Handle("GET /", site)
+	routes.Handle("GET /r/{id}", web.RoomPage())
+	if c.androidApp != "" {
+		links, err := web.AssetLinks(c.androidApp)
+		if err != nil {
+			return fmt.Errorf("-android-app: %w", err)
+		}
+		routes.Handle("GET /.well-known/assetlinks.json", links)
+	}
 	routes.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok\n"))
 	})

@@ -1261,3 +1261,64 @@ func TestRoomRejectsBadName(t *testing.T) {
 		t.Fatalf("got %v, want 400", resp)
 	}
 }
+
+// fakeDirectory has one room, "k7f3qz", called "Tuesday HIIT", whose host
+// key is "secret".
+type fakeDirectory struct{ touched atomic.Int32 }
+
+func (*fakeDirectory) Name(id string) (string, bool) {
+	return "Tuesday HIIT", id == "k7f3qz"
+}
+func (*fakeDirectory) IsHostKey(id, key string) bool { return id == "k7f3qz" && key == "secret" }
+func (d *fakeDirectory) Touch(string)                { d.touched.Add(1) }
+
+func welcomeOrError(t *testing.T, url string) signal.Message {
+	t.Helper()
+	ws := dial(t, url)
+	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var m signal.Message
+	if err := ws.ReadJSON(&m); err != nil {
+		t.Fatal(err)
+	}
+	ws.Close()
+	return m
+}
+
+// With a directory, only created rooms can be joined, and the welcome
+// carries the room's name.
+func TestRoomDirectory(t *testing.T) {
+	dir := &fakeDirectory{}
+	prefix := serveRooms(t, &Rooms{Directory: dir})
+
+	if m := welcomeOrError(t, prefix+"nosuch?name=ada"); m.Type != signal.TypeError || m.Error != "no room with that ID" {
+		t.Fatalf("got %+v, want no such room", m)
+	}
+	m := welcomeOrError(t, prefix+"k7f3qz?name=ada")
+	if m.Type != signal.TypeWelcome || m.RoomName != "Tuesday HIIT" {
+		t.Fatalf("got %+v, want a welcome to Tuesday HIIT", m)
+	}
+	if dir.touched.Load() == 0 {
+		t.Fatal("the room wasn't marked as used")
+	}
+}
+
+// The room's creator, joining with its host key, hosts it, taking over
+// from whoever opened it first; and gets in even when it's locked.
+func TestRoomCreatorHosts(t *testing.T) {
+	url := serveRooms(t, &Rooms{Directory: &fakeDirectory{}}) + "k7f3qz"
+	a := joinRoom(t, url, "ada") // first in: standing in as host
+	on := true
+	a.send(signal.Message{Type: signal.TypeSetSettings, Locked: &on})
+	waitEvent(t, a, signal.TypeSettings, func(m signal.Message) bool { return m.Locked != nil && *m.Locked })
+
+	c := joinRoom(t, url, "coach&key=secret")
+	waitEvent(t, a, signal.TypeParticipantJoined, func(m signal.Message) bool {
+		return m.Participant.ID == c.id && m.Participant.Role == signal.RoleHost
+	})
+	role(t, a, a, signal.RoleModerator)
+
+	// A wrong key is just a guest, and the room is locked.
+	if m := welcomeOrError(t, url+"?name=bo&key=guess"); m.Type != signal.TypeError || !strings.Contains(m.Error, "locked") {
+		t.Fatalf("got %+v, want the room locked", m)
+	}
+}

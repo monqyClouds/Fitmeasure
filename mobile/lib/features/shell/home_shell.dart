@@ -1,22 +1,58 @@
+import 'dart:async';
+
 import 'package:animations/animations.dart';
+import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
 import '../library/library_screen.dart';
+import '../live/join_room.dart';
 import '../live/live_screen.dart';
+import '../live/rooms_api.dart';
 import '../plans/plans_screen.dart';
 import '../progress/progress_screen.dart';
 import '../today/today_screen.dart';
 
-class HomeShell extends StatefulWidget {
+/// Links the app was opened with, the first one included. Tests replace
+/// it: there's no platform to ask.
+final roomLinksProvider = Provider<Stream<Uri>>(
+  (ref) => AppLinks().uriLinkStream,
+);
+
+class HomeShell extends ConsumerStatefulWidget {
   const HomeShell({super.key});
 
   @override
-  State<HomeShell> createState() => _HomeShellState();
+  ConsumerState<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends State<HomeShell> {
+class _HomeShellState extends ConsumerState<HomeShell> {
   int _index = 0;
+  StreamSubscription<Uri>? _links;
+
+  static const _liveTab = 4;
+
+  @override
+  void initState() {
+    super.initState();
+    // Room links (live.somto.si/r/k7f3qz) open the room, whether they
+    // started the app or arrived while it was running.
+    _links = ref.read(roomLinksProvider).listen(_onLink, onError: (_) {});
+  }
+
+  @override
+  void dispose() {
+    _links?.cancel();
+    super.dispose();
+  }
+
+  void _onLink(Uri uri) {
+    final id = roomIdFromLink(uri);
+    if (id == null || !mounted) return;
+    setState(() => _index = _liveTab);
+    openRoomById(context, ref, id);
+  }
 
   static const _tabs = <Widget>[
     TodayScreen(key: PageStorageKey('today')),

@@ -6,6 +6,7 @@ import 'package:fitmeasure/app/app.dart';
 import 'package:fitmeasure/app/providers.dart';
 import 'package:fitmeasure/data/backup/backup_service.dart';
 import 'package:fitmeasure/data/db/database.dart';
+import 'package:fitmeasure/features/shell/home_shell.dart';
 import 'package:fitmeasure/data/repos/exercise_repo.dart';
 import 'package:fitmeasure/data/repos/profile_repo.dart';
 import 'package:fitmeasure/data/repos/settings_repo.dart';
@@ -31,7 +32,10 @@ void main() {
 
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [databaseProvider.overrideWithValue(db)],
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          roomLinksProvider.overrideWithValue(const Stream.empty()),
+        ],
         child: const FitmeasureApp(),
       ),
     );
@@ -91,7 +95,10 @@ void main() {
     addTearDown(db.close);
     final pid = await ProfileRepo(db).create(name: 'Sam', color: 0xFFB8F34A);
     final container = ProviderContainer(
-      overrides: [databaseProvider.overrideWithValue(db)],
+      overrides: [
+        databaseProvider.overrideWithValue(db),
+        roomLinksProvider.overrideWithValue(const Stream.empty()),
+      ],
     );
     addTearDown(container.dispose);
     await container.read(currentProfileIdProvider.notifier).select(pid);
@@ -143,7 +150,10 @@ void main() {
       thumbUrl: '',
     );
     final container = ProviderContainer(
-      overrides: [databaseProvider.overrideWithValue(db)],
+      overrides: [
+        databaseProvider.overrideWithValue(db),
+        roomLinksProvider.overrideWithValue(const Stream.empty()),
+      ],
     );
     addTearDown(container.dispose);
     await container.read(currentProfileIdProvider.notifier).select(pid);
@@ -252,7 +262,10 @@ void main() {
     addTearDown(db.close);
     final pid = await ProfileRepo(db).create(name: 'Sam', color: 0xFF5AA9FF);
     final container = ProviderContainer(
-      overrides: [databaseProvider.overrideWithValue(db)],
+      overrides: [
+        databaseProvider.overrideWithValue(db),
+        roomLinksProvider.overrideWithValue(const Stream.empty()),
+      ],
     );
     addTearDown(container.dispose);
     await container.read(currentProfileIdProvider.notifier).select(pid);
@@ -300,6 +313,7 @@ void main() {
     final container = ProviderContainer(
       overrides: [
         databaseProvider.overrideWithValue(db),
+        roomLinksProvider.overrideWithValue(const Stream.empty()),
         backupServiceProvider.overrideWithValue(
           BackupService(db, documents: () async => dir, temp: () async => dir),
         ),

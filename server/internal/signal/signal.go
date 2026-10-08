@@ -122,6 +122,10 @@ type Message struct {
 
 	// Resume, in a welcome or resumed, is a secret token: reconnecting with
 	// ?resume=<token> within the grace period puts you back in the room.
+	// RoomName, in welcome, is the room's name, for people to see; the ID
+	// is in the URL.
+	RoomName string `json:"roomName,omitempty"`
+
 	Resume string `json:"resume,omitempty"`
 
 	// Track, in moderation messages: "mic" or "camera".

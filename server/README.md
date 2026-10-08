@@ -11,7 +11,7 @@ scratch on [Pion](https://github.com/pion/webrtc), in the stages described in
 | S3. Real networks: TURN, deployment, the Android app | built; the 30-minute phone-on-4G test is still to do |
 | S4. Simulcast | ✅ (see the notes below on switching down) |
 | S5. Bandwidth estimation | built; needs testing on real devices (see below) |
-| S6. Session features | built, with provisional roles (whoever opens a room hosts it); the 16-person hour is still to do |
+| S6. Session features | built, with provisional roles (a room's creator hosts it, by its host key); the 16-person hour is still to do |
 
 ## Run it
 
@@ -24,10 +24,11 @@ go run ./cmd/fitmeasure-server
 
 Open <http://localhost:8080> in Chrome or Firefox. It opens the latest stage:
 
-- **Small room** (`/room/`): enter a name and press **Join**. Open the page in
-  more tabs, browsers or devices and join the same room; everyone sees
-  everyone, up to 16 people. The log shows every signalling step, including
-  the server's new offer each time someone joins or leaves.
+- **Rooms** (`/room/`): create a room. It gets a six-character ID and a link,
+  `/r/{id}`; open the link in more tabs, browsers or devices (or enter the ID)
+  and join; everyone sees everyone, up to 16 people. The browser that created
+  the room keeps its host key and hosts it. The log shows every signalling
+  step, including the server's new offer each time someone joins or leaves.
 - **Echo** (`/echo/`): press **Start**. The right-hand video has made the round
   trip through the server.
 
@@ -70,6 +71,8 @@ which beat `.env`.
 | `-turn-port` | `FITMEASURE_TURN_PORT` | `0` | Run TURN over UDP and TCP on this port, usually `3478`. `0` is off. |
 | `-turn-domain` | `FITMEASURE_TURN_DOMAIN` | | Also serve TURN over TLS on port 443 for this hostname. Needs `-domain`. |
 | `-turn-relay-ports` | `FITMEASURE_TURN_RELAY_PORTS` | `50000-50199` | UDP ports TURN relays from |
+| `-rooms-file` | `FITMEASURE_ROOMS_FILE` | `rooms.json` | Where created rooms are saved, so their links survive restarts. Empty keeps them in memory. Rooms unused for 30 days are forgotten. |
+| `-android-app` | `FITMEASURE_ANDROID_APP` | | `package:sha256` of the Android app allowed to open room links, served as `/.well-known/assetlinks.json`. Get the fingerprint with `apksigner verify --print-certs app-release.apk`. |
 | `-bwe` | `FITMEASURE_BWE` | `on` | Fit each viewer's layers to an estimate of their bandwidth (stage 5). `off` chooses by tile size only. |
 
 For example, to use port 8282 locally:
@@ -315,3 +318,20 @@ web/static/              plain JavaScript test pages for the stages
   Someone who speaks for two seconds while off the first page moves onto
   it; a chip names anyone speaking on another page and jumps there.
 
+
+## Rooms
+
+Rooms are created, then joined by ID; the ID is what's shared, and the server
+supplies the name:
+
+| | |
+|---|---|
+| `POST /api/rooms` `{"name": "Tuesday HIIT"}` | `201 {"id": "k7f3qz", "name", "hostKey", "link"}`. 30 per hour per address. |
+| `GET /api/rooms/{id}` | `200 {"id", "name", "link", "people"}`, or `404`. The ID may be typed loosely (`K7F-3QZ`). |
+| `GET /r/{id}` | The room page; on Android, room links open the app instead. |
+| `GET /ws/rooms/{id}?name=Ada[&key=…]` | Join. An unknown ID gets the error `no room with that ID`. The welcome carries `roomName`. |
+
+IDs are six characters from `abcdefghjkmnpqrstuvwxyz23456789` (no 0/o, 1/l/i),
+about 890 million of them. Until there are accounts, the room's creator is
+recognised by its host key: joining with it makes them host, taking over from
+whoever stood in, and gets them in even when the room is locked.

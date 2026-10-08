@@ -24,4 +24,19 @@ class SettingsRepo {
       .insertOnConflictUpdate(
         AppSettingsCompanion.insert(key: key, value: '$value'),
       );
+
+  Stream<String?> watchString(String key) =>
+      (_db.select(_db.appSettings)..where((s) => s.key.equals(key)))
+          .watchSingleOrNull()
+          .map((row) => row?.value);
+
+  Future<String?> getString(String key) async => (await (_db.select(
+    _db.appSettings,
+  )..where((s) => s.key.equals(key))).getSingleOrNull())?.value;
+
+  Future<void> setString(String key, String value) => _db
+      .into(_db.appSettings)
+      .insertOnConflictUpdate(
+        AppSettingsCompanion.insert(key: key, value: value),
+      );
 }

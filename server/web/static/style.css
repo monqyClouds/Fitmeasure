@@ -211,3 +211,15 @@ input:not([type]), input[type="text"] {
 .log .good { color: var(--good); }
 .log .bad { color: var(--bad); }
 .log .muted { color: var(--text-3); }
+
+.room-id { color: var(--text-2); }
+.room-id strong { color: var(--text); font-size: 20px; letter-spacing: 2px; margin-left: 6px; font-variant-numeric: tabular-nums; }
+.button-link {
+  font-weight: 700;
+  padding: 12px 22px;
+  border-radius: 14px;
+  background: var(--accent);
+  color: #0c0d11;
+  text-decoration: none;
+}
+.button-link[hidden], #lobby[hidden], #join[hidden], #share[hidden] { display: none; }

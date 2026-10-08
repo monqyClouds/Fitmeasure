@@ -212,9 +212,7 @@ function sendLayout() {
 async function join(event) {
   event.preventDefault();
   const name = $('name').value.trim();
-  const room = $('room').value.trim();
   try { localStorage.setItem('fitmeasure-name', name); } catch {}
-  history.replaceState(null, '', `?room=${encodeURIComponent(room)}`);
 
   $('start').disabled = true;
   $('log').replaceChildren();
@@ -227,9 +225,10 @@ async function join(event) {
       audio: withAudio ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true } : false,
     });
 
-    roomUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/rooms/${encodeURIComponent(room)}`;
-    await openSocket(`${roomUrl}?name=${encodeURIComponent(name)}`);
-    log(`Signalling WebSocket open, joining room "${room}"`);
+    roomUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/rooms/${roomId}`;
+    const key = hostKeys()[roomId];
+    await openSocket(`${roomUrl}?name=${encodeURIComponent(name)}${key ? `&key=${key}` : ''}`);
+    log(`Signalling WebSocket open, joining "${roomTitle}"`);
     $('stop').disabled = false;
   } catch (err) {
     log(`Error: ${err.message}`, 'bad');
@@ -489,6 +488,7 @@ async function handle(msg) {
       break;
     case 'error':
       log(`Server error: ${msg.error}`, 'bad');
+      if (msg.error === 'no room with that ID') leave();
       break;
   }
 }
@@ -781,8 +781,86 @@ function setDetail(id, detail) {
   renderCaption(id);
 }
 
-const params = new URLSearchParams(location.search);
-$('room').value = params.get('room') || 'gym';
+// Rooms are created here (or in the app) and joined by ID, at /r/{id}.
+let roomId = null;
+let roomTitle = null;
+
+// Host keys of the rooms created in this browser: joining with one makes
+// us the host.
+function hostKeys() {
+  try { return JSON.parse(localStorage.getItem('fitmeasure-host-keys') || '{}'); } catch { return {}; }
+}
+
+// What someone typed or pasted ("K7F-3QZ", or a whole link) as an ID.
+function normalizeId(text) {
+  let s = text.trim();
+  const at = s.lastIndexOf('/r/');
+  if (at >= 0) s = s.slice(at + 3).split(/[/?#]/)[0];
+  s = s.toLowerCase().replace(/[\s-]/g, '');
+  return /^[a-hj-km-np-z2-9]{6}$/.test(s) ? s : null;
+}
+
+async function createRoom(event) {
+  event.preventDefault();
+  const res = await fetch('/api/rooms', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: $('new-name').value }),
+  });
+  const body = await res.json();
+  if (!res.ok) { log(body.error, 'bad'); return; }
+  const keys = hostKeys();
+  keys[body.id] = body.hostKey;
+  try { localStorage.setItem('fitmeasure-host-keys', JSON.stringify(keys)); } catch {}
+  location.href = `/r/${body.id}`;
+}
+
+function findRoom(event) {
+  event.preventDefault();
+  const id = normalizeId($('find-id').value);
+  if (!id) { log('That isn\'t a room ID: they have six letters and digits', 'bad'); return; }
+  location.href = `/r/${id}`;
+}
+
+async function showRoom(id) {
+  const res = await fetch(`/api/rooms/${id}`);
+  if (!res.ok) {
+    $('title').textContent = 'Room not found';
+    $('subtitle').textContent = `There's no room with the ID ${id}. Rooms are forgotten after 30 days unused.`;
+    $('lobby').hidden = false;
+    return;
+  }
+  const room = await res.json();
+  roomId = room.id;
+  roomTitle = room.name;
+  document.title = `${room.name} · Fitmeasure`;
+  $('title').textContent = room.name;
+  $('subtitle').textContent = room.people
+    ? `${room.people} ${room.people === 1 ? 'person is' : 'people are'} here now.`
+    : 'Nobody is here yet.';
+  if (hostKeys()[room.id]) $('subtitle').textContent += ' You created this room, so you host it.';
+  $('room-id').textContent = `${room.id.slice(0, 3)} ${room.id.slice(3)}`.toUpperCase();
+  $('share').hidden = false;
+  $('copy-link').onclick = async () => {
+    await navigator.clipboard.writeText(room.link);
+    $('copy-link').textContent = 'Copied';
+  };
+  // On Android, offer the app; Chrome falls back to this page without it.
+  if (/Android/i.test(navigator.userAgent)) {
+    $('open-app').href = `intent://${location.host}/r/${room.id}#Intent;scheme=https;package=com.fitmeasure.fitmeasure;end`;
+    $('open-app').hidden = false;
+  }
+  $('join').hidden = false;
+}
+
+const path = location.pathname.match(/^\/r\/([^/]+)/);
+if (path) {
+  showRoom(normalizeId(decodeURIComponent(path[1])) ?? path[1]);
+} else {
+  $('lobby').hidden = false;
+}
+$('create').onsubmit = createRoom;
+$('find').onsubmit = findRoom;
 try { $('name').value = localStorage.getItem('fitmeasure-name') || ''; } catch {}
 $('join').onsubmit = join;
 $('stop').onclick = leave;
